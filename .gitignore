@@ -35,3 +35,6 @@ hooks/claude/
 hooks/codex/
 hooks/gemini/
 __pycache__/
+
+# Installed item tracking
+installed/

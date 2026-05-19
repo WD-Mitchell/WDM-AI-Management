@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ─────────────────────────────────────────────────────────────
-# sync.sh — Distribute AI content from ~/.ai-management to each AI tool
+# sync.sh — Distribute AI content from ~/ai-management to each AI tool
 # ─────────────────────────────────────────────────────────────
 #
 # Usage:
@@ -23,11 +23,12 @@ set -euo pipefail
 #   ./sync.sh --restore file.zip   # restore a specific backup file
 #   ./sync.sh --pull               # download latest content from GitHub
 #   ./sync.sh --group <name>       # sync only items in the named group
+#   ./sync.sh --template <name>    # sync items defined in a template (per-project)
 #
 # ─────────────────────────────────────────────────────────────
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-AI_MGMT_DIR="$HOME/.ai-management"
+AI_MGMT_DIR="$HOME/ai-management"
 AGENTS_HOME="${AI_MANAGEMENT_HOME:-$AI_MGMT_DIR}"
 
 # GitHub source for --pull (configure via environment variables)
@@ -41,7 +42,7 @@ if [[ -d "$SCRIPT_DIR/../../agents" ]]; then
 fi
 
 # Subdirectories to manage
-MANAGED_DIRS=(agents skills hooks rules workflows mcp groups)
+MANAGED_DIRS=(agents skills hooks rules workflows mcp groups templates)
 
 DRY_RUN=false
 REFRESH=false
@@ -54,6 +55,7 @@ RESTORE_FILE=""
 GLOBAL_MODE=false
 TARGETS=()
 SELECTED_GROUPS=()
+TEMPLATE=""
 
 # ── Parse arguments ──────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -70,6 +72,12 @@ while [[ $# -gt 0 ]]; do
       fi
       SELECTED_GROUPS+=("$2"); shift
       ;;
+    --template)
+      if [[ -z "${2:-}" || "${2:-}" == --* ]]; then
+        echo "Error: --template requires a name"; exit 1
+      fi
+      TEMPLATE="$2"; shift
+      ;;
     --restore-latest) RESTORE_LATEST=true ;;
     --restore)
       RESTORE=true
@@ -81,7 +89,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     copilot|codex|claude|gemini) TARGETS+=("$1") ;;
     --help|-h)
-      sed -n '3,25p' "$0" | sed 's/^# \?//'
+      sed -n '3,27p' "$0" | sed 's/^# \?//'
       exit 0
       ;;
     *) echo "Unknown argument: $1"; exit 1 ;;
@@ -128,7 +136,7 @@ fi
 
 # ── Pull: download latest from GitHub ────────────────────────
 # Downloads the repo tarball, extracts managed directories into
-# ~/.ai-management as real files (no local clone needed).
+# ~/ai-management as real files (no local clone needed).
 pull_from_github() {
   if [[ -z "$GITHUB_REPO" ]]; then
     err "No repository configured for --pull."
@@ -212,9 +220,9 @@ pull_from_github() {
   log "Pull complete → $AI_MGMT_DIR"
 }
 
-# ── Setup: ensure ~/.ai-management is populated ──────────────
+# ── Setup: ensure ~/ai-management is populated ──────────────
 # If a local repo checkout exists, symlinks its subdirs into
-# ~/.ai-management. Otherwise, checks that ~/.ai-management already
+# ~/ai-management. Otherwise, checks that ~/ai-management already
 # has content (from a previous --pull). If neither, advises
 # the user to run --pull.
 setup_ai_mgmt_dir() {
@@ -222,7 +230,7 @@ setup_ai_mgmt_dir() {
 
   # If we have a local repo checkout, symlink its dirs
   if [[ -n "$REPO_ROOT" ]]; then
-    # Guard: skip if REPO_ROOT resolved to ~/.ai-management itself (self-reference)
+    # Guard: skip if REPO_ROOT resolved to ~/ai-management itself (self-reference)
     local real_mgmt real_repo
     real_mgmt="$(cd "$AI_MGMT_DIR" && pwd -P)"
     real_repo="$(cd "$REPO_ROOT" && pwd -P)"
@@ -383,7 +391,83 @@ parse_group_file() {
   done < "$group_file"
 }
 
-# Default to "default" group when none specified
+# ── Template resolution ───────────────────────────────────────
+# Templates combine groups + individual items. If --template is specified,
+# parse the template file and add its groups to SELECTED_GROUPS,
+# and its individual items directly to the _GRP arrays.
+if [[ -n "$TEMPLATE" ]]; then
+  TEMPLATE_FILE="$AGENTS_HOME/templates/${TEMPLATE}.template"
+  if [[ ! -f "$TEMPLATE_FILE" ]]; then
+    err "Template file not found: $TEMPLATE_FILE"
+    exit 1
+  fi
+  info "Applying template: ${BOLD}$TEMPLATE${NC}"
+
+  _TPL_SECTION=""
+  while IFS= read -r line; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    if [[ "$line" =~ ^\[([a-z]+)\]$ ]]; then
+      _TPL_SECTION="${BASH_REMATCH[1]}"
+      continue
+    fi
+    if [[ -n "$_TPL_SECTION" ]]; then
+      case "$_TPL_SECTION" in
+        groups)    SELECTED_GROUPS+=("$line") ;;
+        agents)    _GRP_AGENTS+=("$line") ;;
+        skills)    _GRP_SKILLS+=("$line") ;;
+        rules)     _GRP_RULES+=("$line") ;;
+        workflows) _GRP_WORKFLOWS+=("$line") ;;
+        hooks)     _GRP_HOOKS+=("$line") ;;
+        mcp)       _GRP_MCP+=("$line") ;;
+        *)         warn "Unknown template section: [$_TPL_SECTION]" ;;
+      esac
+    fi
+  done < "$TEMPLATE_FILE"
+
+  # Also save template name to project config if in project mode
+  if [[ "$GLOBAL_MODE" == false && "$DRY_RUN" == false ]]; then
+    echo "$TEMPLATE" > "$TARGET_ROOT/.ai-management"
+    log "Saved template reference → $TARGET_ROOT/.ai-management"
+  fi
+fi
+
+# If no template and no groups specified, check for project config file
+if [[ -z "$TEMPLATE" && ${#SELECTED_GROUPS[@]} -eq 0 ]]; then
+  if [[ "$GLOBAL_MODE" == false && -f "$TARGET_ROOT/.ai-management" ]]; then
+    _saved_template="$(head -1 "$TARGET_ROOT/.ai-management" | tr -d '[:space:]')"
+    if [[ -n "$_saved_template" ]]; then
+      TEMPLATE_FILE="$AGENTS_HOME/templates/${_saved_template}.template"
+      if [[ -f "$TEMPLATE_FILE" ]]; then
+        info "Using project template: ${BOLD}$_saved_template${NC}"
+        _TPL_SECTION=""
+        while IFS= read -r line; do
+          line="${line#"${line%%[![:space:]]*}"}"
+          line="${line%"${line##*[![:space:]]}"}"
+          [[ -z "$line" || "$line" == \#* ]] && continue
+          if [[ "$line" =~ ^\[([a-z]+)\]$ ]]; then
+            _TPL_SECTION="${BASH_REMATCH[1]}"
+            continue
+          fi
+          if [[ -n "$_TPL_SECTION" ]]; then
+            case "$_TPL_SECTION" in
+              groups)    SELECTED_GROUPS+=("$line") ;;
+              agents)    _GRP_AGENTS+=("$line") ;;
+              skills)    _GRP_SKILLS+=("$line") ;;
+              rules)     _GRP_RULES+=("$line") ;;
+              workflows) _GRP_WORKFLOWS+=("$line") ;;
+              hooks)     _GRP_HOOKS+=("$line") ;;
+              mcp)       _GRP_MCP+=("$line") ;;
+            esac
+          fi
+        done < "$TEMPLATE_FILE"
+      fi
+    fi
+  fi
+fi
+
+# Default to "default" group when none specified and no template loaded
 [[ ${#SELECTED_GROUPS[@]} -eq 0 ]] && SELECTED_GROUPS=(default)
 
 # Collect raw entries from all requested groups
@@ -1024,7 +1108,7 @@ sync_gemini() {
   fi
 
   local output="$GEMINI_DIR/GEMINI.md"
-  local marker="<!-- MANAGED BY ~/.ai-management sync.sh — DO NOT EDIT MANUALLY -->"
+  local marker="<!-- MANAGED BY ~/ai-management sync.sh — DO NOT EDIT MANUALLY -->"
   local build_dir="$AGENTS_HOME/agents/gemini"
 
   if $DRY_RUN; then
@@ -1037,7 +1121,7 @@ sync_gemini() {
     echo ""
     echo "# Custom Instructions"
     echo ""
-    echo "> Auto-generated from \`~/.ai-management/agents/\` by \`sync.sh\`"
+    echo "> Auto-generated from \`~/ai-management/agents/\` by \`sync.sh\`"
     echo "> Last synced: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
     echo ""
 

@@ -1,0 +1,34 @@
+# Example — Demonstrates the template format
+
+# Templates combine groups and individual items.
+# Use `./install.sh --template example` to install, or
+# `./sync.sh --template example` to deploy to a project.
+
+[groups]
+# Include entire groups by name (references files in groups/*.group)
+# default
+
+[agents]
+# Individual agents to include (by name, no .md extension)
+# senior-developer
+# code-reviewer
+
+[skills]
+# Individual skills to include (by directory name)
+AI-Management
+
+[rules]
+# Individual rules to include
+# code-style
+
+[workflows]
+# Individual workflows to include
+# code-review
+
+[hooks]
+# Individual hooks to include
+# post-merge
+
+[mcp]
+# Individual MCP servers to include
+# github

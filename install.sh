@@ -8,7 +8,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKILLS_DIR="$SCRIPT_DIR/skills"
 GROUPS_DIR="$SCRIPT_DIR/groups"
-AI_MGMT_HOME="${AI_MANAGEMENT_HOME:-$HOME/.ai-management}"
+AI_MGMT_HOME="${AI_MANAGEMENT_HOME:-$HOME/ai-management}"
 INSTALLED_DIR="$AI_MGMT_HOME/installed"
 INSTALLED_FILE="$INSTALLED_DIR/skills.conf"
 
@@ -587,6 +587,7 @@ usage() {
   echo "Options:"
   echo "  --list                       List all available skills"
   echo "  --list-groups                List all groups"
+  echo "  --list-templates             List all templates"
   echo "  --installed                  Show installed items (all types)"
   echo ""
   echo "  Default install:"
@@ -608,6 +609,10 @@ usage() {
   echo "  --install-group-workflows <name>"
   echo "  --install-group-hooks <name>"
   echo "  --install-group-mcp <name>"
+  echo ""
+  echo "  Template install:"
+  echo "  --template <name>            Install a template (groups + items) to current project"
+  echo "  --template <name> --global   Install a template globally"
   echo ""
   echo "  Install all:"
   echo "  --install-all                Install everything (all types)"
@@ -631,8 +636,8 @@ usage() {
   echo "  $(basename "$0") --install                           # install defaults"
   echo "  $(basename "$0") --install-skill code-review,debugging"
   echo "  $(basename "$0") --install-group core-development"
+  echo "  $(basename "$0") --template web-development          # apply template to project"
   echo "  $(basename "$0") --install-all-skills"
-  echo "  $(basename "$0") --install-group-agents core-development"
   echo ""
   echo "Without arguments, launches the interactive menu."
 }
@@ -785,6 +790,62 @@ case "$1" in
       ok "Uninstalled ${_type%s}: $r"
     done
     save_installed_type "$_type"
+    ;;
+  --list-templates)
+    TEMPLATES_DIR="$SCRIPT_DIR/templates"
+    for f in "$TEMPLATES_DIR"/*.template; do
+      [[ -f "$f" ]] || continue
+      _name=$(basename "$f" .template)
+      _desc=$(head -1 "$f" | sed 's/^# //')
+      printf "%-25s %s\n" "$_name" "$_desc"
+    done
+    ;;
+  --template)
+    shift
+    [[ $# -eq 0 ]] && { err "Provide template name"; exit 1; }
+    _tpl_name="$1"
+    _tpl_file="$SCRIPT_DIR/templates/${_tpl_name}.template"
+    [[ -f "$_tpl_file" ]] || { err "Template not found: $_tpl_name"; exit 1; }
+    info "Installing template: $_tpl_name"
+    _TPL_SECTION=""
+    while IFS= read -r line; do
+      line="${line%%#*}"
+      line="$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+      [[ -z "$line" ]] && continue
+      if [[ "$line" == "["*"]" ]]; then
+        _TPL_SECTION="${line:1:${#line}-2}"
+        continue
+      fi
+      if [[ -n "$_TPL_SECTION" ]]; then
+        case "$_TPL_SECTION" in
+          groups)
+            _grp_file="$GROUPS_DIR/${line}.group"
+            [[ -f "$_grp_file" ]] || { warn "Group not found in template: $line"; continue; }
+            for _type in agents skills rules workflows hooks mcp; do
+              _items=()
+              while IFS= read -r s; do
+                [[ -n "$s" ]] && _items+=("$s")
+              done < <(parse_group_section "$_grp_file" "$_type")
+              if [[ ${#_items[@]} -gt 0 ]]; then
+                install_type "$_type" "${_items[@]}"
+              fi
+            done
+            ;;
+          agents|skills|rules|workflows|hooks|mcp)
+            install_type "$_TPL_SECTION" "$line"
+            ;;
+        esac
+      fi
+    done < "$_tpl_file"
+    # Save template as project config if not --global
+    _global=false
+    for _a in "$@"; do [[ "$_a" == "--global" || "$_a" == "-g" ]] && _global=true; done
+    if [[ "$_global" == false ]]; then
+      _project_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+      echo "$_tpl_name" > "$_project_root/.ai-management"
+      ok "Saved template → $_project_root/.ai-management"
+    fi
+    info "Run ${CYAN}sync.sh --template $_tpl_name${NC} to deploy"
     ;;
   *)
     err "Unknown option: $1"
