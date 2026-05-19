@@ -17,7 +17,8 @@ Write once, deploy everywhere. A framework for managing AI agents, skills, rules
 │  You are a senior code reviewer...                                  │
 └──────────────────────────────────┬──────────────────────────────────┘
                                    │
-                              build.py
+                          install.sh sync
+                     (builds + deploys)
                                    │
               ┌────────────┬───────┴───────┬────────────┐
               ▼            ▼               ▼            ▼
