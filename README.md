@@ -197,7 +197,17 @@ install.sh sync [targets] [flags]
 ├── agents/              # Agent definitions (*.md)
 ├── skills/              # Skill directories (SKILL.md + files)
 │   └── AI-Management/  # This management tool
-│       ├── build.py    # Source → harness transformer
+│       ├── install.sh  # Entry point (Python)
+│       ├── build.py    # Standalone build wrapper
+│       ├── ai_management/  # Python package
+│       │   ├── build.py    # Build engine (frontmatter, field resolution)
+│       │   ├── cli.py      # CLI argument parsing & routing
+│       │   ├── groups.py   # Group & template resolution
+│       │   ├── install.py  # Install tracking
+│       │   ├── pull.py     # GitHub pull/download
+│       │   ├── sync.py     # Sync/deploy to harnesses
+│       │   ├── tui.py      # Interactive TUI menus
+│       │   └── utils.py    # Shared utilities (colors, paths, config)
 │       └── SKILL.md    # Detailed docs
 ├── rules/               # Rule definitions (*.md)
 ├── workflows/           # Workflow definitions (*.md)
@@ -206,8 +216,10 @@ install.sh sync [targets] [flags]
 ├── groups/              # Group files (*.group)
 ├── templates/           # Template files (*.template)
 ├── defaults.conf        # Model tier → actual model mapping
-└── install.sh           # CLI/TUI installer
+└── install.sh           # Symlink → skills/AI-Management/install.sh
 ```
+
+> **Requires:** Python 3.8+ (stdlib only, no pip packages)
 
 ## Supported Harnesses
 

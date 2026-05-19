@@ -1,0 +1,150 @@
+from __future__ import annotations
+
+import os
+import shutil
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Dict, List, Optional
+
+ALL_HARNESSES = ["copilot", "claude", "codex", "gemini"]
+HARNESS_SET = set(ALL_HARNESSES)
+CONTENT_TYPES = ["agents", "skills", "rules", "workflows", "hooks", "mcp"]
+MANAGED_DIRS = ["agents", "skills", "hooks", "rules", "workflows", "mcp", "groups", "templates"]
+DISPLAY_FIELDS = {"color", "emoji", "vibe"}
+DEFAULT_TIERS = {"default", "default-small", "default-large"}
+OMIT_SENTINEL = "__omit__"
+HARNESS_SKIP_DIRS = HARNESS_SET | {"__pycache__", "backups"}
+MCP_SOURCE_EXTENSIONS = (".md", ".json", ".yaml", ".yml")
+MCP_BUILD_EXTENSIONS = (".md", ".json")
+SYNC_TEMPLATE_FILE = ".ai-management"
+
+PACKAGE_DIR = Path(__file__).resolve().parent
+SCRIPT_DIR = PACKAGE_DIR.parent
+ENTRYPOINT = SCRIPT_DIR / "install.sh"
+REPO_ROOT = SCRIPT_DIR.parent.parent
+AI_MGMT_HOME = Path(os.environ.get("AI_MANAGEMENT_HOME", str(Path.home() / "ai-management"))).expanduser()
+INSTALLED_DIR = AI_MGMT_HOME / "installed"
+BACKUP_DIR = AI_MGMT_HOME / "backups"
+GITHUB_REPO = os.environ.get("AI_MANAGEMENT_REPO", "")
+GITHUB_BRANCH = os.environ.get("AI_MANAGEMENT_BRANCH", "main")
+
+
+def detect_content_root() -> Path:
+    required = ["agents", "skills", "groups", "templates"]
+    if all((REPO_ROOT / name).exists() for name in required):
+        return REPO_ROOT
+    return AI_MGMT_HOME
+
+
+CONTENT_ROOT = detect_content_root()
+GROUPS_DIR = CONTENT_ROOT / "groups"
+TEMPLATES_DIR = CONTENT_ROOT / "templates"
+DEFAULTS_FILE = CONTENT_ROOT / "defaults.conf"
+
+USE_COLOR = sys.stdout.isatty() and os.environ.get("TERM", "") not in {"", "dumb"}
+BOLD = "\033[1m" if USE_COLOR else ""
+RED = "\033[0;31m" if USE_COLOR else ""
+GREEN = "\033[0;32m" if USE_COLOR else ""
+YELLOW = "\033[1;33m" if USE_COLOR else ""
+BLUE = "\033[0;34m" if USE_COLOR else ""
+CYAN = "\033[0;36m" if USE_COLOR else ""
+NC = "\033[0m" if USE_COLOR else ""
+
+
+class CLIError(Exception):
+    pass
+
+
+@dataclass
+class SyncOptions:
+    dry_run: bool = False
+    refresh: bool = False
+    purge: bool = False
+    backup: bool = True
+    pull: bool = False
+    restore: bool = False
+    restore_latest: bool = False
+    restore_file: str = ""
+    global_mode: bool = False
+    targets: List[str] = field(default_factory=list)
+    selected_groups: List[str] = field(default_factory=list)
+    template: str = ""
+    target_root: Optional[Path] = None
+    copilot_agents_dir: Optional[Path] = None
+    copilot_skills_dir: Optional[Path] = None
+    copilot_rules_dir: Optional[Path] = None
+    copilot_workflows_dir: Optional[Path] = None
+    copilot_hooks_dir: Optional[Path] = None
+    codex_dir: Optional[Path] = None
+    codex_agents_dir: Optional[Path] = None
+    claude_dir: Optional[Path] = None
+    gemini_dir: Optional[Path] = None
+    resolved: Dict[str, List[Path]] = field(default_factory=lambda: {content_type: [] for content_type in CONTENT_TYPES})
+
+
+def log(message: str) -> None:
+    print(f"{GREEN}✓{NC} {message}")
+
+
+def ok(message: str) -> None:
+    print(f"  {GREEN}✓{NC} {message}")
+
+
+def warn(message: str) -> None:
+    print(f"{YELLOW}⚠{NC} {message}")
+
+
+def info(message: str) -> None:
+    print(f"{BLUE}→{NC} {message}")
+
+
+def err(message: str) -> None:
+    print(f"{RED}✗{NC} {message}", file=sys.stderr)
+
+
+def clear_screen() -> None:
+    if sys.stdout.isatty():
+        print("\033[2J\033[H", end="")
+
+
+def ensure_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def remove_path(path: Path) -> None:
+    if not path.exists() and not path.is_symlink():
+        return
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.is_dir():
+        shutil.rmtree(path)
+
+
+def strip_inline_comment(line: str) -> str:
+    if "#" in line:
+        line = line.split("#", 1)[0]
+    return line.strip()
+
+
+def dedupe(items):
+    seen = set()
+    result = []
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        result.append(item)
+    return result
+
+
+def singular_label(content_type: str) -> str:
+    return content_type[:-1] if content_type.endswith("s") else content_type
+
+
+def is_relative_to(path: Path, other: Path) -> bool:
+    try:
+        path.relative_to(other)
+        return True
+    except ValueError:
+        return False
