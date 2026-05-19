@@ -2,7 +2,7 @@
 
 # Templates combine groups and individual items.
 # Use `./install.sh --template example` to install, or
-# `./sync.sh --template example` to deploy to a project.
+# `./install.sh sync --template example` to deploy to a project.
 
 [groups]
 # Include entire groups by name (references files in groups/*.group)

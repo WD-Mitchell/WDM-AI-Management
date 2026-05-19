@@ -17,11 +17,11 @@ Manage AI agents, skills, rules, workflows, hooks, and MCP configs across all co
 
 | Mode | Command | Where content goes |
 |------|---------|-------------------|
-| **Project** (default) | `sync.sh` | Current git repo root |
-| **Global** | `sync.sh -g` | `$HOME` (available everywhere) |
-| **Template** | `sync.sh --template <name>` | Current project + saves config |
+| **Project** (default) | `install.sh sync` | Current git repo root |
+| **Global** | `install.sh sync -g` | `$HOME` (available everywhere) |
+| **Template** | `install.sh sync --template <name>` | Current project + saves config |
 
-## Script: `sync.sh`
+## Script: `install.sh sync`
 
 ### Targets
 
@@ -29,10 +29,10 @@ Specify one or more, or omit to sync all:
 
 | Target  | Command             | Deploy method |
 |---------|---------------------|---------------|
-| Copilot | `./sync.sh copilot` | Symlinks to `.github/copilot/` |
-| Claude  | `./sync.sh claude`  | Symlinks to `.claude/` |
-| Codex   | `./sync.sh codex`   | Symlinks to `.codex/` |
-| Gemini  | `./sync.sh gemini`  | Concatenation to `.gemini/GEMINI.md` |
+| Copilot | `./install.sh sync copilot` | Symlinks to `.github/copilot/` |
+| Claude  | `./install.sh sync claude`  | Symlinks to `.claude/` |
+| Codex   | `./install.sh sync codex`   | Symlinks to `.codex/` |
+| Gemini  | `./install.sh sync gemini`  | Concatenation to `.gemini/GEMINI.md` |
 
 ### Flags
 
@@ -57,27 +57,27 @@ Specify one or more, or omit to sync all:
 
 ```bash
 # Template: apply web-development preset to this project
-./sync.sh --template web-development
+./install.sh sync --template web-development
 
 # Group: sync only the backend group to Claude
-./sync.sh claude --group backend
+./install.sh sync claude --group backend
 
 # Purge and re-sync Copilot without backup
-./sync.sh copilot --purge --refresh --no-backup
+./install.sh sync copilot --purge --refresh --no-backup
 
 # Dry-run a global sync
-./sync.sh -g --dry-run
+./install.sh sync -g --dry-run
 
 # Combine multiple groups
-./sync.sh --group backend --group testing
+./install.sh sync --group backend --group testing
 ```
 
 ### Project auto-detection
 
-When run without `--group` or `--template`, sync.sh checks for a `.ai-management` file in the project root. If found, it re-applies the saved template automatically. This means:
+When run without `--group` or `--template`, install.sh sync checks for a `.ai-management` file in the project root. If found, it re-applies the saved template automatically. This means:
 
-1. Apply template once: `sync.sh --template web-development`
-2. Future syncs auto-apply: `sync.sh` (reads `.ai-management`)
+1. Apply template once: `install.sh sync --template web-development`
+2. Future syncs auto-apply: `install.sh sync` (reads `.ai-management`)
 
 ## Templates
 
@@ -111,7 +111,7 @@ github
 
 ```bash
 # Apply to current project
-./sync.sh --template web-development
+./install.sh sync --template web-development
 ./install.sh --template web-development
 
 # Apply globally
@@ -150,8 +150,8 @@ Use `*` in any section to include all items of that type.
 ### Using groups
 
 ```bash
-./sync.sh --group core-development
-./sync.sh --group backend --group testing
+./install.sh sync --group core-development
+./install.sh sync --group backend --group testing
 ./install.sh --install-group core-development
 ```
 
@@ -227,7 +227,7 @@ export AI_MANAGEMENT_REPO="your-org/your-repo"
 cd ~/ai-management && ./install.sh --install
 
 # Sync to your project
-cd ~/your-project && ~/ai-management/skills/AI-Management/sync.sh
+cd ~/your-project && ~/ai-management/skills/AI-Management/install.sh sync
 ```
 
 ## Environment Variables
@@ -244,10 +244,10 @@ Created automatically before every sync/purge/refresh (unless `--no-backup`).
 
 ```bash
 # Interactive restore
-./sync.sh claude --restore
+./install.sh sync claude --restore
 
 # Restore latest
-./sync.sh --restore-latest
+./install.sh sync --restore-latest
 ```
 
 Backup dirs are never removed by `--purge`.

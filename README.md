@@ -74,10 +74,10 @@ and maintainability. Do not comment on style preferences.
 ./install.sh --template web-development
 
 # Sync/deploy to current project
-./skills/AI-Management/sync.sh
+./install.sh sync
 
 # Sync globally (available in every project)
-./skills/AI-Management/sync.sh -g
+./install.sh sync -g
 ```
 
 ## Content Authoring
@@ -151,24 +151,9 @@ browser-tools
 
 Apply to current project: `./install.sh --template web-development`
 
-This creates a `.ai-management` file in the project root, so subsequent `sync.sh` runs auto-apply the same template.
+This creates a `.ai-management` file in the project root, so subsequent `install.sh sync` runs auto-apply the same template.
 
 ## CLI Reference
-
-### sync.sh
-
-```bash
-sync.sh [options]
-
-  (no flags)        Sync to current project (auto-detect template)
-  -g, --global      Sync globally
-  -p, --pull        Pull latest from remote before sync
-  --group <name>    Sync a specific group
-  --template <name> Apply a template
-  --dry-run         Show what would happen
-```
-
-### install.sh
 
 ```bash
 install.sh [options]
@@ -183,6 +168,18 @@ install.sh [options]
   --list-groups                 List groups
   --list-templates              List templates
   --installed                   Show what's installed
+
+install.sh sync [targets] [flags]
+
+  (no flags)        Sync to current project (auto-detect template)
+  -g, --global      Sync globally
+  -p, --pull        Pull latest from remote before sync
+  --group <name>    Sync a specific group
+  --template <name> Apply a template
+  --dry-run         Show what would happen
+  --refresh         Remove existing before re-syncing
+  --purge           Remove all managed files (no re-sync)
+  --restore         Restore from backup
 ```
 
 ## Configuration
@@ -200,7 +197,6 @@ install.sh [options]
 ├── agents/              # Agent definitions (*.md)
 ├── skills/              # Skill directories (SKILL.md + files)
 │   └── AI-Management/  # This management tool
-│       ├── sync.sh     # Build & deploy
 │       ├── build.py    # Source → harness transformer
 │       └── SKILL.md    # Detailed docs
 ├── rules/               # Rule definitions (*.md)
@@ -230,7 +226,7 @@ When you apply a template or group to a project, a `.ai-management` file is crea
 web-development
 ```
 
-On subsequent `sync.sh` runs (without flags), this file is auto-detected and the template is re-applied. Add it to `.gitignore` or commit it — your choice.
+On subsequent `install.sh sync` runs (without flags), this file is auto-detected and the template is re-applied. Add it to `.gitignore` or commit it — your choice.
 
 ## Documentation
 
