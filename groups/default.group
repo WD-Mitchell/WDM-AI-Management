@@ -1,0 +1,24 @@
+# Default — Example default group. Customise with your own content.
+
+[agents]
+# Add your agent names here (without .md extension)
+# example-agent
+
+[skills]
+AI-Management
+
+[rules]
+# Add your rule names here
+# code-style
+
+[workflows]
+# Add your workflow names here
+# code-review
+
+[hooks]
+# Add your hook names here
+# post-merge
+
+[mcp]
+# Add your MCP server names here
+# github

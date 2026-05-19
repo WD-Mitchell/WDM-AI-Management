@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Post-merge hook — auto-sync after git pull
+cd "$(git rev-parse --show-toplevel)" || exit 0
+./skills/AI-Management/sync.sh
