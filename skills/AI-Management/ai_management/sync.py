@@ -104,50 +104,77 @@ def parse_sync_args(argv: Sequence[str]) -> SyncOptions:
 
 def sync_init_runtime(options: SyncOptions) -> None:
     options.target_root = Path.home() if options.global_mode else Path.cwd()
-    options.copilot_agents_dir = options.target_root / ".github" / "copilot" / "agents"
-    options.copilot_skills_dir = options.target_root / ".copilot" / "skills"
-    options.copilot_rules_dir = options.target_root / ".copilot" / "instructions"
-    options.copilot_workflows_dir = options.target_root / ".copilot" / "workflows"
-    options.copilot_hooks_dir = options.target_root / ".copilot" / "hooks"
+    # GitHub Copilot CLI layout (docs.github.com/en/copilot/reference/copilot-cli-reference):
+    #   Project: .github/agents/, .github/skills/, .github/hooks/
+    #            .github/copilot-instructions.md (single file at repo root)
+    #   User:    ~/.copilot/agents/, ~/.copilot/skills/, ~/.copilot/hooks/
+    #            ~/.copilot/instructions/*.instructions.md
+    #            ~/.copilot/mcp-config.json
+    if options.global_mode:
+        options.copilot_agents_dir = options.target_root / ".copilot" / "agents"
+        options.copilot_skills_dir = options.target_root / ".copilot" / "skills"
+        options.copilot_rules_dir = options.target_root / ".copilot" / "instructions"
+        options.copilot_hooks_dir = options.target_root / ".copilot" / "hooks"
+        options.copilot_mcp_file = options.target_root / ".copilot" / "mcp-config.json"
+    else:
+        options.copilot_agents_dir = options.target_root / ".github" / "agents"
+        options.copilot_skills_dir = options.target_root / ".github" / "skills"
+        options.copilot_rules_dir = options.target_root / ".github"  # single copilot-instructions.md
+        options.copilot_hooks_dir = options.target_root / ".github" / "hooks"
+        options.copilot_mcp_file = None  # project-level MCP for Copilot CLI is undocumented
+    # Copilot CLI has no first-class workflows concept; we keep the field for
+    # parity with other harnesses but it currently maps to no-op.
+    options.copilot_workflows_dir = None
     options.codex_dir = options.target_root / ".codex"
     options.codex_agents_dir = options.codex_dir / "agents"
+    options.codex_config_toml = options.codex_dir / "config.toml"
+    # Codex skills convention is the shared ~/.agents/skills/ tree, not ~/.codex/skills/.
+    options.codex_skills_dir = (Path.home() if options.global_mode else options.target_root) / ".agents" / "skills"
     options.claude_dir = options.target_root / ".claude"
+    # Claude Code MCP: project ⇒ `.mcp.json` at repo root, global ⇒ inline in
+    # `~/.claude.json` (the user settings file). We refuse to overwrite the
+    # user settings file in global mode and skip MCP sync there.
+    options.claude_mcp_file = (options.target_root / ".mcp.json") if not options.global_mode else None
     options.gemini_dir = options.target_root / ".gemini"
+    options.gemini_settings_file = options.gemini_dir / "settings.json"
     mode = "global" if options.global_mode else "project"
     info(f"Mode: \033[1m{mode}\033[0m (target: {options.target_root})")
 
 
 def managed_paths_for(options: SyncOptions, target: str) -> Dict[str, Path]:
     if target == "copilot":
-        return {
+        paths: Dict[str, Path] = {
             "agents": options.copilot_agents_dir,
             "skills": options.copilot_skills_dir,
             "rules": options.copilot_rules_dir,
-            "workflows": options.copilot_workflows_dir,
             "hooks": options.copilot_hooks_dir,
-            "mcp": options.target_root / ".copilot" / "mcp.json",
         }
+        if options.copilot_mcp_file:
+            paths["mcp"] = options.copilot_mcp_file
+        return paths
     if target == "codex":
         return {
             "agents": options.codex_agents_dir,
-            "skills": options.codex_dir / "skills",
-            "rules": options.codex_dir / "instructions",
-            "workflows": options.codex_dir / "workflows",
+            "skills": options.codex_skills_dir,
             "hooks": options.codex_dir / "hooks",
-            "mcp": options.codex_dir / "mcp-servers.json",
+            "mcp": options.codex_config_toml,
         }
     if target == "claude":
-        return {
+        paths = {
             "agents": options.claude_dir / "agents",
             "skills": options.claude_dir / "skills",
             "rules": options.claude_dir / "rules",
-            "workflows": options.claude_dir / "workflows",
+            "workflows": options.claude_dir / "commands",
             "hooks": options.claude_dir / "hooks",
-            "mcp": options.claude_dir / "mcp.json",
         }
+        if options.claude_mcp_file:
+            paths["mcp"] = options.claude_mcp_file
+        return paths
+    # Gemini: native subagents only (no GEMINI.md monolith).
     return {
-        "gemini": options.gemini_dir / "GEMINI.md",
-        "mcp": options.gemini_dir / "mcp-servers.json",
+        "agents": options.gemini_dir / "agents",
+        "skills": options.gemini_dir / "skills",
+        "mcp": options.gemini_settings_file,
     }
 
 
@@ -375,6 +402,44 @@ def sync_mcp_to(harness: str, label: str, target_file: Path, resolved_paths: Seq
     log(f"{label}: wrote {len(servers)} MCP servers → {target_file}")
 
 
+def _copilot_agent_dest_name(stem: str) -> str:
+    """Copilot CLI requires the `.agent.md` suffix to recognize custom agents."""
+    return f"{stem}.agent.md"
+
+
+def sync_copilot_rules_project(options: SyncOptions) -> None:
+    """Project-level Copilot rules are a single .github/copilot-instructions.md file.
+
+    We concatenate the resolved rules' content (from the built copilot output)
+    into that file. Unlike other syncs this is a generated file, not a symlink.
+    """
+    rules = options.resolved.get("rules") or []
+    if not rules:
+        return
+    dest = options.target_root / ".github" / "copilot-instructions.md"
+    build_dir = CONTENT_ROOT / "rules" / "copilot"
+    sections = []
+    for rule_file in rules:
+        built = build_dir / rule_file.name
+        source = built if built.exists() else rule_file
+        if not source.exists():
+            continue
+        sections.append(f"## {source.stem}\n\n{source.read_text(encoding='utf-8').rstrip()}\n")
+    if not sections:
+        return
+    body = (
+        "<!-- MANAGED BY ai-management install.sh sync — DO NOT EDIT MANUALLY -->\n\n"
+        "# Custom Instructions\n\n"
+        + "\n".join(sections)
+    )
+    if options.dry_run:
+        info(f"[dry-run] Would write {dest}")
+        return
+    ensure_dir(dest.parent)
+    dest.write_text(body, encoding="utf-8")
+    log(f"Copilot: wrote {dest}")
+
+
 def sync_copilot(options: SyncOptions) -> None:
     print()
     print("\033[1m── Syncing to GitHub Copilot CLI ──\033[0m")
@@ -386,14 +451,101 @@ def sync_copilot(options: SyncOptions) -> None:
         built_file = build_dir / agent_file.name
         if not built_file.exists():
             continue
-        make_link(built_file, options.copilot_agents_dir / agent_file.name, options.dry_run)
+        dest_name = _copilot_agent_dest_name(agent_file.stem)
+        make_link(built_file, options.copilot_agents_dir / dest_name, options.dry_run)
         count += 1
     log(f"Copilot: symlinked {count} agent files → {options.copilot_agents_dir}/")
     sync_items_to(options.copilot_skills_dir, "copilot", "skills", options.resolved["skills"], options.dry_run, options.refresh, "Copilot")
-    sync_items_to(options.copilot_rules_dir, "copilot", "rules", options.resolved["rules"], options.dry_run, options.refresh, "Copilot")
-    sync_items_to(options.copilot_workflows_dir, "copilot", "workflows", options.resolved["workflows"], options.dry_run, options.refresh, "Copilot")
-    sync_items_to(options.copilot_hooks_dir, "copilot", "hooks", options.resolved["hooks"], options.dry_run, options.refresh, "Copilot")
-    sync_mcp_to("copilot", "Copilot", options.target_root / ".copilot" / "mcp.json", options.resolved["mcp"], options.dry_run)
+    if options.global_mode:
+        # User-level: per-file instructions with the .instructions.md suffix.
+        _sync_copilot_user_rules(options)
+    else:
+        sync_copilot_rules_project(options)
+    if options.copilot_hooks_dir is not None:
+        # NOTE: Copilot CLI expects hook *configuration* as JSON files. Source
+        # hooks here are shell scripts, so we drop them in `.github/hooks/` (or
+        # `~/.copilot/hooks/`) for convenience but Copilot won't auto-load them
+        # without a corresponding JSON entry. See docs.github.com/copilot/hooks.
+        sync_items_to(options.copilot_hooks_dir, "copilot", "hooks", options.resolved["hooks"], options.dry_run, options.refresh, "Copilot")
+    if options.copilot_mcp_file is not None:
+        sync_mcp_to("copilot", "Copilot", options.copilot_mcp_file, options.resolved["mcp"], options.dry_run)
+    elif options.resolved.get("mcp"):
+        warn("Copilot CLI does not document a project-level MCP config — skipping. Re-run with -g to write ~/.copilot/mcp-config.json.")
+
+
+def _sync_copilot_user_rules(options: SyncOptions) -> None:
+    """User-level Copilot rules: symlink each rule as <name>.instructions.md."""
+    rules = options.resolved.get("rules") or []
+    if not rules:
+        return
+    target_dir = options.copilot_rules_dir
+    if options.refresh:
+        purge_symlinks_in(target_dir)
+    build_dir = CONTENT_ROOT / "rules" / "copilot"
+    count = 0
+    for rule_file in rules:
+        built = build_dir / rule_file.name
+        if not built.exists():
+            continue
+        dest_name = f"{rule_file.stem}.instructions.md"
+        make_link(built, target_dir / dest_name, options.dry_run)
+        count += 1
+    if count:
+        log(f"Copilot: symlinked {count} rules → {target_dir}/")
+
+
+CODEX_MCP_BLOCK_BEGIN = "# >>> ai-management mcp_servers (DO NOT EDIT) >>>"
+CODEX_MCP_BLOCK_END = "# <<< ai-management mcp_servers <<<"
+
+
+def _strip_managed_block(text: str, begin: str, end: str) -> str:
+    """Remove a previously-emitted managed block from a config file."""
+    if begin not in text:
+        return text
+    pre, _, rest = text.partition(begin)
+    _, _, post = rest.partition(end)
+    # Trim trailing newline left by the removed block
+    return (pre.rstrip() + "\n" + post.lstrip()).strip() + ("\n" if text.endswith("\n") else "")
+
+
+def sync_codex_mcp(options: SyncOptions) -> None:
+    """Merge Codex MCP server TOML snippets into ~/.codex/config.toml.
+
+    Codex requires `[mcp_servers.NAME]` blocks inside `config.toml`; there is
+    no separate JSON config. We wrap our managed servers in a marked block so
+    the user can edit the rest of `config.toml` freely.
+    """
+    resolved = options.resolved.get("mcp") or []
+    target_file = options.codex_config_toml
+    build_dir = CONTENT_ROOT / "mcp" / "codex"
+    snippets = []
+    for source_path in resolved:
+        built = build_dir / (source_path.stem + ".toml")
+        if not built.exists():
+            continue
+        snippets.append(built.read_text(encoding="utf-8").rstrip())
+    if not snippets:
+        return
+    block = (
+        CODEX_MCP_BLOCK_BEGIN
+        + "\n"
+        + "\n\n".join(snippets)
+        + "\n"
+        + CODEX_MCP_BLOCK_END
+        + "\n"
+    )
+    if options.dry_run:
+        info(f"[dry-run] Would merge {len(snippets)} MCP servers → {target_file}")
+        return
+    ensure_dir(target_file.parent)
+    existing = target_file.read_text(encoding="utf-8") if target_file.exists() else ""
+    cleaned = _strip_managed_block(existing, CODEX_MCP_BLOCK_BEGIN, CODEX_MCP_BLOCK_END)
+    if cleaned and not cleaned.endswith("\n"):
+        cleaned += "\n"
+    if cleaned and not cleaned.endswith("\n\n"):
+        cleaned += "\n"
+    target_file.write_text(cleaned + block, encoding="utf-8")
+    log(f"Codex: merged {len(snippets)} MCP servers → {target_file}")
 
 
 def sync_codex(options: SyncOptions) -> None:
@@ -404,17 +556,21 @@ def sync_codex(options: SyncOptions) -> None:
     build_dir = CONTENT_ROOT / "agents" / "codex"
     count = 0
     for agent_file in options.resolved["agents"]:
-        built_file = build_dir / agent_file.name
+        # Codex agents are TOML files (see build.py:build_codex_agent_toml).
+        built_file = build_dir / (agent_file.stem + ".toml")
         if not built_file.exists():
             continue
-        make_link(built_file, options.codex_agents_dir / agent_file.name, options.dry_run)
+        make_link(built_file, options.codex_agents_dir / built_file.name, options.dry_run)
         count += 1
     log(f"Codex: symlinked {count} agent files → {options.codex_agents_dir}/")
-    sync_items_to(options.codex_dir / "skills", "codex", "skills", options.resolved["skills"], options.dry_run, options.refresh, "Codex")
-    sync_items_to(options.codex_dir / "instructions", "codex", "rules", options.resolved["rules"], options.dry_run, options.refresh, "Codex")
-    sync_items_to(options.codex_dir / "workflows", "codex", "workflows", options.resolved["workflows"], options.dry_run, options.refresh, "Codex")
+    # Codex skills convention is the cross-tool ~/.agents/skills/ tree.
+    sync_items_to(options.codex_skills_dir, "codex", "skills", options.resolved["skills"], options.dry_run, options.refresh, "Codex")
     sync_items_to(options.codex_dir / "hooks", "codex", "hooks", options.resolved["hooks"], options.dry_run, options.refresh, "Codex")
-    sync_mcp_to("codex", "Codex", options.codex_dir / "mcp-servers.json", options.resolved["mcp"], options.dry_run)
+    if options.resolved.get("rules"):
+        warn("Codex CLI uses AGENTS.md hierarchy for instructions, not a rules/ directory — skipping rules sync. Place rules manually in AGENTS.md.")
+    if options.resolved.get("workflows"):
+        warn("Codex CLI has no first-class workflows concept — skipping workflows sync.")
+    sync_codex_mcp(options)
 
 
 def sync_claude(options: SyncOptions) -> None:
@@ -434,64 +590,87 @@ def sync_claude(options: SyncOptions) -> None:
     log(f"Claude: symlinked {count} agent files → {agents_dir}/")
     sync_items_to(options.claude_dir / "skills", "claude", "skills", options.resolved["skills"], options.dry_run, options.refresh, "Claude")
     sync_items_to(options.claude_dir / "rules", "claude", "rules", options.resolved["rules"], options.dry_run, options.refresh, "Claude")
-    sync_items_to(options.claude_dir / "workflows", "claude", "workflows", options.resolved["workflows"], options.dry_run, options.refresh, "Claude")
+    # Claude treats workflows as slash commands (~/.claude/commands/).
+    sync_items_to(options.claude_dir / "commands", "claude", "workflows", options.resolved["workflows"], options.dry_run, options.refresh, "Claude")
     sync_items_to(options.claude_dir / "hooks", "claude", "hooks", options.resolved["hooks"], options.dry_run, options.refresh, "Claude")
-    sync_mcp_to("claude", "Claude", options.claude_dir / "mcp.json", options.resolved["mcp"], options.dry_run)
+    # Claude Code reads project MCP from `<repo>/.mcp.json`. In global mode the
+    # canonical location is `~/.claude.json` which is the user settings file —
+    # we refuse to overwrite that and skip MCP sync.
+    if options.claude_mcp_file is not None:
+        sync_mcp_to("claude", "Claude", options.claude_mcp_file, options.resolved["mcp"], options.dry_run)
+    elif options.resolved.get("mcp"):
+        warn("Claude Code global MCP lives inside ~/.claude.json (user settings) — refusing to overwrite. Use project mode for .mcp.json sync.")
+
+
+def sync_gemini_mcp(options: SyncOptions) -> None:
+    """Merge MCP server entries into ~/.gemini/settings.json under `mcpServers`.
+
+    Gemini CLI does NOT read a separate `mcp-servers.json`; MCP config is
+    nested inside settings.json. We rewrite only the `mcpServers` key,
+    preserving everything else (including comments via a best-effort
+    JSON-with-comments tolerant read).
+    """
+    resolved = options.resolved.get("mcp") or []
+    target_file = options.gemini_settings_file
+    build_dir = CONTENT_ROOT / "mcp" / "gemini"
+    servers: Dict[str, dict] = {}
+    for source_path in resolved:
+        built = build_dir / (source_path.stem + ".json")
+        if not built.exists():
+            continue
+        servers[built.stem] = json.loads(built.read_text(encoding="utf-8"))
+    if not servers:
+        return
+    if options.dry_run:
+        info(f"[dry-run] Would merge {len(servers)} MCP servers → {target_file} (mcpServers key)")
+        return
+    ensure_dir(target_file.parent)
+    settings: dict = {}
+    if target_file.exists():
+        try:
+            settings = json.loads(target_file.read_text(encoding="utf-8"))
+            if not isinstance(settings, dict):
+                warn(f"{target_file} is not a JSON object — overwriting with fresh settings.")
+                settings = {}
+        except json.JSONDecodeError as exc:
+            warn(f"Could not parse {target_file} ({exc}). A backup is in {BACKUP_DIR}/.")
+            settings = {}
+    settings["mcpServers"] = servers
+    target_file.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+    log(f"Gemini: merged {len(servers)} MCP servers → {target_file}")
 
 
 def sync_gemini(options: SyncOptions) -> None:
     print()
     print("\033[1m── Syncing to Gemini CLI ──\033[0m")
-    output = options.gemini_dir / "GEMINI.md"
-    if options.dry_run:
-        info(f"[dry-run] Would generate {output}")
-        sync_mcp_to("gemini", "Gemini", options.gemini_dir / "mcp-servers.json", options.resolved["mcp"], True)
-        return
-    ensure_dir(options.gemini_dir)
-    lines = [
-        "<!-- MANAGED BY ai-management install.sh sync — DO NOT EDIT MANUALLY -->",
-        "",
-        "# Custom Instructions",
-        "",
-        "> Auto-generated from AI Management content by `install.sh sync`",
-        f"> Last synced: {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}",
-        "",
-    ]
-    if options.resolved["rules"]:
-        lines.extend(["## Global Rules", ""])
-        for rule_file in options.resolved["rules"]:
-            built_file = CONTENT_ROOT / "rules" / "gemini" / rule_file.name
-            source = built_file if built_file.exists() else rule_file
-            lines.extend([f"### {source.stem}", "", source.read_text(encoding='utf-8').rstrip(), ""])
-        lines.extend(["---", ""])
-    lines.extend(["## Available Agent Personas", "", "When asked to work as a specific agent or persona, adopt the matching instructions below.", ""])
+    # Per user choice (Switch fully to native subagents): emit per-agent .md
+    # files into .gemini/agents/ instead of concatenating into GEMINI.md.
+    agents_dir = options.gemini_dir / "agents"
+    if options.refresh:
+        purge_symlinks_in(agents_dir)
+    build_dir = CONTENT_ROOT / "agents" / "gemini"
+    count = 0
     for agent_file in options.resolved["agents"]:
-        built_file = CONTENT_ROOT / "agents" / "gemini" / agent_file.name
+        built_file = build_dir / agent_file.name
         if not built_file.exists():
             continue
-        lines.extend(["---", "", f"### Agent: {built_file.stem}", "", built_file.read_text(encoding='utf-8').rstrip(), ""])
-    if options.resolved["workflows"]:
-        lines.extend(["---", "", "## Workflows", ""])
-        for workflow_file in options.resolved["workflows"]:
-            built_file = CONTENT_ROOT / "workflows" / "gemini" / workflow_file.name
-            source = built_file if built_file.exists() else workflow_file
-            lines.extend([f"### {source.stem}", "", source.read_text(encoding='utf-8').rstrip(), ""])
-    if options.resolved["skills"]:
-        lines.extend(["---", "", "## Skills", "", "The following skills are available. Use their instructions when relevant.", ""])
-        for skill_dir in options.resolved["skills"]:
-            built_dir = CONTENT_ROOT / "skills" / "gemini" / skill_dir.name
-            use_dir = built_dir if built_dir.exists() else skill_dir
-            skill_md = None
-            for candidate in (use_dir / "SKILL.md", use_dir / "skill.md"):
-                if candidate.exists():
-                    skill_md = candidate
-                    break
-            if skill_md is None:
-                continue
-            lines.extend([f"### Skill: {skill_dir.name}", "", skill_md.read_text(encoding='utf-8').rstrip(), ""])
-    output.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
-    log(f"Gemini: generated {output} ({output.stat().st_size // 1024}KB)")
-    sync_mcp_to("gemini", "Gemini", options.gemini_dir / "mcp-servers.json", options.resolved["mcp"], False)
+        make_link(built_file, agents_dir / agent_file.name, options.dry_run)
+        count += 1
+    log(f"Gemini: symlinked {count} agent files → {agents_dir}/")
+    sync_items_to(options.gemini_dir / "skills", "gemini", "skills", options.resolved["skills"], options.dry_run, options.refresh, "Gemini")
+    # Remove any stale GEMINI.md left over from the legacy monolithic layout.
+    legacy_gemini_md = options.gemini_dir / "GEMINI.md"
+    if legacy_gemini_md.exists() and not options.dry_run:
+        try:
+            head = legacy_gemini_md.read_text(encoding="utf-8")[:120]
+            if "MANAGED BY ai-management" in head:
+                legacy_gemini_md.unlink()
+                info(f"Removed legacy {legacy_gemini_md}")
+        except OSError:
+            pass
+    if options.resolved.get("rules") or options.resolved.get("workflows"):
+        warn("Gemini sync is in native-subagents mode — rules/workflows are not concatenated into GEMINI.md. Place rules manually if needed.")
+    sync_gemini_mcp(options)
 
 
 def purge_target(options: SyncOptions, target: str) -> None:

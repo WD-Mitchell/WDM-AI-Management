@@ -76,10 +76,15 @@ class SyncOptions:
     copilot_rules_dir: Optional[Path] = None
     copilot_workflows_dir: Optional[Path] = None
     copilot_hooks_dir: Optional[Path] = None
+    copilot_mcp_file: Optional[Path] = None
     codex_dir: Optional[Path] = None
     codex_agents_dir: Optional[Path] = None
+    codex_config_toml: Optional[Path] = None
+    codex_skills_dir: Optional[Path] = None
     claude_dir: Optional[Path] = None
+    claude_mcp_file: Optional[Path] = None
     gemini_dir: Optional[Path] = None
+    gemini_settings_file: Optional[Path] = None
     resolved: Dict[str, List[Path]] = field(default_factory=lambda: {content_type: [] for content_type in CONTENT_TYPES})
 
 

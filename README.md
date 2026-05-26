@@ -226,10 +226,10 @@ install.sh sync [targets] [flags]
 
 | Harness | Deploy method | Location |
 |---------|--------------|----------|
-| GitHub Copilot | Symlinks | `.github/copilot-instructions.md`, `.github/agents/` |
-| Claude Code | Symlinks | `.claude/agents/`, `.claude/rules/` |
-| Codex | Symlinks | `.codex/agents/`, `.codex/rules/` |
-| Gemini CLI | Concatenation | `.gemini/GEMINI.md` |
+| GitHub Copilot CLI | Symlinks + generated | `.github/agents/*.agent.md`, `.github/skills/`, `.github/copilot-instructions.md`, `~/.copilot/mcp-config.json` (global) |
+| Claude Code | Symlinks + generated | `.claude/agents/`, `.claude/skills/`, `.claude/rules/`, `.mcp.json` (project) |
+| Codex CLI | Symlinks + merged config | `.codex/agents/*.toml`, `~/.agents/skills/`, merged into `.codex/config.toml` (`[mcp_servers.*]`) |
+| Gemini CLI | Symlinks + merged config | `.gemini/agents/`, `.gemini/skills/`, merged into `.gemini/settings.json` (`mcpServers`) |
 
 ## Per-Project Config
 

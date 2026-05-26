@@ -32,41 +32,66 @@ from .utils import CONTENT_ROOT
 ALL_HARNESSES = ["copilot", "claude", "codex", "gemini"]
 HARNESS_SET = set(ALL_HARNESSES)
 
-# Per-harness field schemas for AGENTS (strict whitelist)
+# Per-harness field schemas for AGENTS (strict whitelist).
+# Sources of truth (verified May 2026):
+#   - Claude Code:   https://docs.claude.com/claude-code/ (subagents reference)
+#   - Copilot CLI:   https://docs.github.com/en/copilot/reference/custom-agents-configuration
+#   - Codex CLI:     https://developers.openai.com/codex/subagents (TOML, not MD!)
+#   - Gemini CLI:    https://github.com/google-gemini/gemini-cli/blob/main/docs/core/subagents.md
 AGENT_SCHEMAS = {
-    "copilot": ["name", "description", "model", "reasoning_effort"],
-    "claude": ["name", "description", "model", "effort"],
+    "copilot": [
+        "name", "description", "model", "tools",
+        "mcp-servers", "user-invocable", "disable-model-invocation",
+        "target", "metadata",
+    ],
+    "claude": [
+        "name", "description", "model", "effort",
+        "tools", "disallowedTools", "permissionMode", "color",
+    ],
     "codex": [
+        # NOTE: emitted as TOML, not Markdown frontmatter (see build_agents_codex_toml).
         "name", "description", "model",
         "model_reasoning_effort", "sandbox_mode",
         "mcp_servers", "nickname_candidates",
         "developer_instructions",
     ],
-    "gemini": ["name", "description", "model", "thinkingLevel"],
+    "gemini": [
+        "name", "description", "model",
+        "kind", "tools", "temperature", "max_turns",
+        "thinkingConfig",
+    ],
 }
 
-# Per-harness field schemas for SKILLS (what goes in SKILL.md frontmatter)
+# Per-harness field schemas for SKILLS (what goes in SKILL.md frontmatter).
+# Copilot CLI's SKILL.md frontmatter is intentionally minimal (no model field).
 SKILL_SCHEMAS = {
-    "copilot": ["name", "description", "model"],
-    "claude": ["name", "description", "model"],
-    "codex": ["name", "description", "model"],
-    "gemini": ["name", "description", "model"],
+    "copilot": ["name", "description", "license", "allowed-tools"],
+    "claude": [
+        "name", "description", "allowed-tools", "model", "effort",
+        "argument-hint", "disable-model-invocation",
+    ],
+    "codex": ["name", "description"],
+    "gemini": ["name", "description"],
 }
 
-# Per-harness field schemas for RULES
+# Per-harness field schemas for RULES.
+# Most harnesses treat rules as plain markdown; `globs`/`alwaysApply` are
+# Claude-style frontmatter and ignored elsewhere — kept as a lowest-common
+# superset since unknown fields pass through harmlessly in YAML.
 RULE_SCHEMAS = {
-    "copilot": ["name", "description", "globs", "alwaysApply"],
-    "claude": ["name", "description", "globs", "alwaysApply"],
-    "codex": ["name", "description", "globs", "alwaysApply"],
-    "gemini": ["name", "description", "globs", "alwaysApply"],
+    "copilot": ["name", "description", "applyTo"],
+    "claude": ["name", "description", "paths", "globs", "alwaysApply"],
+    "codex": ["name", "description"],
+    "gemini": ["name", "description"],
 }
 
-# Per-harness field schemas for WORKFLOWS
+# Per-harness field schemas for WORKFLOWS.
+# Claude treats workflow .md files as slash commands.
 WORKFLOW_SCHEMAS = {
-    "copilot": ["name", "description", "model"],
-    "claude": ["name", "description", "model"],
-    "codex": ["name", "description", "model"],
-    "gemini": ["name", "description", "model"],
+    "copilot": ["name", "description"],
+    "claude": ["name", "description", "model", "argument-hint", "allowed-tools"],
+    "codex": ["name", "description"],
+    "gemini": ["name", "description"],
 }
 
 # MCP: all fields pass through (no schema restriction) minus display/override fields
@@ -169,6 +194,32 @@ def resolve_defaults(resolved: dict, harness: str, defaults: dict) -> dict:
             result[field] = value
 
     return result
+
+
+def gemini_wrap_thinking(resolved: dict) -> dict:
+    """
+    Gemini CLI does NOT support a flat `thinkingLevel` field. The real config
+    shape is `thinkingConfig: { thinkingBudget: <int> }`. Accept flat
+    `thinkingBudget` / legacy `thinkingLevel` in source frontmatter and wrap.
+    """
+    if "thinkingBudget" in resolved:
+        budget = resolved.pop("thinkingBudget")
+        try:
+            budget = int(budget)
+        except (TypeError, ValueError):
+            pass
+        existing = resolved.get("thinkingConfig")
+        if isinstance(existing, dict):
+            existing.setdefault("thinkingBudget", budget)
+        else:
+            resolved["thinkingConfig"] = {"thinkingBudget": budget}
+    if "thinkingLevel" in resolved:
+        # Translate legacy LOW/MEDIUM/HIGH tokens to coarse budget hints.
+        level = str(resolved.pop("thinkingLevel")).strip().upper()
+        budget_map = {"LOW": 1024, "MEDIUM": 4096, "HIGH": 16384}
+        if level in budget_map and "thinkingConfig" not in resolved:
+            resolved["thinkingConfig"] = {"thinkingBudget": budget_map[level]}
+    return resolved
 
 
 # ── Frontmatter parsing ─────────────────────────────────────────
@@ -353,20 +404,29 @@ def is_override_key(key: str) -> bool:
 
 # ── Output serialization ─────────────────────────────────────────
 
+def _yaml_scalar(value) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(value)
+    sv = str(value)
+    if any(c in sv for c in ":#{}[]|>&*!%@`"):
+        return f'"{sv}"'
+    return sv
+
+
 def build_frontmatter(resolved: dict) -> str:
     """Serialize resolved fields back to YAML frontmatter."""
     lines = ["---"]
     for key, value in resolved.items():
-        if isinstance(value, list):
-            lines.append(f"{key}: [{', '.join(str(v) for v in value)}]")
-        elif isinstance(value, bool):
-            lines.append(f"{key}: {'true' if value else 'false'}")
+        if isinstance(value, dict):
+            lines.append(f"{key}:")
+            for sub_key, sub_value in value.items():
+                lines.append(f"  {sub_key}: {_yaml_scalar(sub_value)}")
+        elif isinstance(value, list):
+            lines.append(f"{key}: [{', '.join(_yaml_scalar(v) for v in value)}]")
         else:
-            sv = str(value)
-            if any(c in sv for c in ":#{}[]|>&*!%@`"):
-                lines.append(f'{key}: "{sv}"')
-            else:
-                lines.append(f"{key}: {sv}")
+            lines.append(f"{key}: {_yaml_scalar(value)}")
     lines.append("---")
     return "\n".join(lines)
 
@@ -404,6 +464,10 @@ def build_md_file(fields: dict, body: str, harness: str, schema: list[str] | Non
     # Apply defaults resolution (replaces tier tokens with actual model names)
     if defaults:
         resolved = resolve_defaults(resolved, harness, defaults)
+
+    # Gemini: wrap flat thinkingBudget / thinkingLevel into thinkingConfig
+    if harness == "gemini":
+        resolved = gemini_wrap_thinking(resolved)
 
     if resolved:
         frontmatter = build_frontmatter(resolved)
@@ -477,29 +541,112 @@ def atomic_write(path: Path, content: str):
 
 # ── Type-specific build orchestration ────────────────────────────
 
+def _toml_escape(value: str) -> str:
+    """Escape a string for TOML basic-string output."""
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _toml_value(value) -> str:
+    """Serialize a Python value as a TOML scalar/array."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(value)
+    if isinstance(value, float):
+        return repr(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_value(v) for v in value) + "]"
+    if isinstance(value, dict):
+        # Inline table
+        parts = [f"{k} = {_toml_value(v)}" for k, v in value.items()]
+        return "{ " + ", ".join(parts) + " }"
+    sv = str(value)
+    if "\n" in sv:
+        # Multi-line basic string
+        return '"""\n' + sv.replace("\\", "\\\\").replace('"""', '\\"\\"\\"') + '\n"""'
+    return '"' + _toml_escape(sv) + '"'
+
+
+def build_codex_agent_toml(fields: dict, body: str, defaults: dict = None) -> str | None:
+    """
+    Build a Codex `.toml` subagent file from universal source.
+
+    Codex subagents live in ~/.codex/agents/ (or .codex/agents/) as standalone
+    TOML files keyed by the `name` field. The markdown body becomes the
+    `developer_instructions` multi-line string.
+    """
+    schema = AGENT_SCHEMAS["codex"]
+    resolved = {}
+    for field_name in schema:
+        if field_name == "developer_instructions":
+            continue  # filled from body below
+        value = resolve_field(fields, "codex", field_name)
+        if value is not None:
+            resolved[field_name] = value
+
+    if defaults:
+        resolved = resolve_defaults(resolved, "codex", defaults)
+
+    # Body becomes developer_instructions unless explicitly overridden via frontmatter
+    instructions = resolve_field(fields, "codex", "developer_instructions")
+    if instructions is None:
+        instructions = body.strip()
+
+    if not resolved.get("name") and not instructions:
+        return None
+
+    lines = []
+    # Preferred field ordering for readability
+    preferred = [
+        "name", "description", "model", "model_reasoning_effort",
+        "sandbox_mode", "nickname_candidates", "mcp_servers",
+    ]
+    for key in preferred:
+        if key in resolved:
+            lines.append(f"{key} = {_toml_value(resolved[key])}")
+    # Any remaining whitelisted fields not in preferred order
+    for key, value in resolved.items():
+        if key in preferred:
+            continue
+        lines.append(f"{key} = {_toml_value(value)}")
+    if instructions:
+        lines.append(f"developer_instructions = {_toml_value(instructions)}")
+    return "\n".join(lines) + "\n"
+
+
 def build_agents(source_dir: Path, harnesses: list[str], dry_run: bool = False, defaults: dict = None) -> dict:
-    """Build harness-specific agent files."""
+    """Build harness-specific agent files.
+
+    Codex emits standalone `.toml` files; all other harnesses emit `.md` with
+    YAML frontmatter.
+    """
     stats = {h: 0 for h in harnesses}
     source_files = sorted(f for f in source_dir.glob("*.md") if f.is_file())
 
     for harness in harnesses:
         output_dir = source_dir / harness
+        suffix = ".toml" if harness == "codex" else ".md"
         if not dry_run:
             output_dir.mkdir(parents=True, exist_ok=True)
-            for existing in output_dir.glob("*.md"):
+            for existing in list(output_dir.glob("*.md")) + list(output_dir.glob("*.toml")):
                 existing.unlink()
 
         schema = AGENT_SCHEMAS.get(harness, [])
         for source_file in source_files:
             content = source_file.read_text(encoding="utf-8")
             fields, body = parse_frontmatter(content)
-            result = build_md_file(fields, body, harness, schema, defaults=defaults)
+
+            if harness == "codex":
+                result = build_codex_agent_toml(fields, body, defaults=defaults)
+            else:
+                result = build_md_file(fields, body, harness, schema, defaults=defaults)
             if result is None:
                 continue
 
-            output_path = output_dir / source_file.name
+            output_name = source_file.stem + suffix
+            output_path = output_dir / output_name
             if dry_run:
-                print(f"  [dry-run] {harness}/agents/{source_file.name}")
+                print(f"  [dry-run] {harness}/agents/{output_name}")
             else:
                 atomic_write(output_path, result)
             stats[harness] += 1
@@ -645,9 +792,12 @@ def build_mcp_entry(fields: dict, harness: str) -> dict | None:
     """
     Build a harness-specific MCP server config dict from resolved fields.
 
-    Each harness needs a slightly different JSON structure:
-      - copilot/claude/gemini: {"type": ..., "url": ...} or {"command": ..., "args": ...}
-      - codex: {"transport": "stdio|http", "url"|"command": ..., ...}
+    Per-harness structure differences (verified May 2026):
+      - Claude Code:    {"type": "http"|"sse"|"stdio", url|command|args|env|headers}
+      - Copilot CLI:    {"type": "local"|"http"|"sse", command|args|env|tools|url|headers}
+      - Codex CLI:      no `type`/`transport`; stdio inferred from `command`,
+                        HTTP from `url`. Env-var list lives in `env_vars`.
+      - Gemini CLI:     {command,args,env} | {url} (SSE) | {httpUrl} (HTTP)
     """
     # Resolve all non-display, non-override fields
     resolved = {}
@@ -660,89 +810,149 @@ def build_mcp_entry(fields: dict, harness: str) -> dict | None:
     if not resolved:
         return None
 
-    transport = resolved.pop("transport", "http")
+    # `transport` is a source-side convenience; not all harnesses use it.
+    transport = resolved.pop("transport", None)
+    if transport is None:
+        # Infer: stdio if a command is present, http otherwise.
+        transport = "stdio" if "command" in resolved else "http"
 
     if harness == "codex":
-        return _mcp_for_codex(resolved, transport)
-    elif harness == "gemini":
+        return _mcp_for_codex(resolved)
+    if harness == "gemini":
         return _mcp_for_gemini(resolved, transport)
-    else:
-        # copilot and claude use the same format
+    if harness == "copilot":
         return _mcp_for_copilot(resolved, transport)
+    return _mcp_for_claude(resolved, transport)
 
 
-def _mcp_for_copilot(resolved: dict, transport: str) -> dict:
-    """Copilot/Claude MCP format: {type, url} or {command, args}."""
+# Fields that belong to other harnesses' MCP schemas — never pass through.
+_FOREIGN_MCP_FIELDS = {
+    "env_vars", "bearer_token_env_var", "http_headers",
+    "enabled_tools", "disabled_tools", "default_tools_approval_mode",
+    "startup_timeout_sec", "tool_timeout_sec",
+    "httpUrl",  # Gemini-only key; never emit for others
+    "transport", "type",
+}
+
+
+def _passthrough_mcp(resolved: dict, out: dict, extra_allowed: set[str] = frozenset()) -> dict:
+    """Copy remaining fields into `out`, dropping foreign-harness keys."""
+    resolved.pop("name", None)
+    for key, value in resolved.items():
+        if key in _FOREIGN_MCP_FIELDS and key not in extra_allowed:
+            continue
+        out[key] = value
+    return out
+
+
+def _mcp_for_claude(resolved: dict, transport: str) -> dict:
+    """Claude Code MCP format (placed in repo-root .mcp.json under mcpServers)."""
     out = {}
     if transport == "stdio":
-        if "command" in resolved:
-            out["command"] = resolved.pop("command")
-        if "args" in resolved:
-            out["args"] = resolved.pop("args")
-        if "env" in resolved:
-            out["env"] = resolved.pop("env")
+        for k in ("command", "args", "env"):
+            if k in resolved:
+                out[k] = resolved.pop(k)
     else:
         out["type"] = transport
         if "url" in resolved:
             out["url"] = resolved.pop("url")
-
-    # Pass through remaining fields (description, tools, headers, etc.)
-    resolved.pop("name", None)
-    for k, v in resolved.items():
-        out[k] = v
-    return out
+        if "headers" in resolved:
+            out["headers"] = resolved.pop("headers")
+    return _passthrough_mcp(resolved, out)
 
 
-def _mcp_for_codex(resolved: dict, transport: str) -> dict:
-    """Codex MCP format: TOML-style but output as JSON for individual files."""
+def _mcp_for_copilot(resolved: dict, transport: str) -> dict:
+    """Copilot CLI MCP format (`~/.copilot/mcp-config.json`).
+
+    `type` is one of `local` | `stdio` | `http` | `sse`. Docs use `local` as
+    the canonical alias for stdio in Copilot CLI examples.
+    """
     out = {}
     if transport == "stdio":
-        out["transport"] = "stdio"
-        if "command" in resolved:
-            out["command"] = resolved.pop("command")
-        if "args" in resolved:
-            out["args"] = resolved.pop("args")
-        if "env" in resolved:
-            out["env"] = resolved.pop("env")
+        out["type"] = "local"
+        for k in ("command", "args", "env"):
+            if k in resolved:
+                out[k] = resolved.pop(k)
     else:
-        out["transport"] = "http"
+        out["type"] = transport
         if "url" in resolved:
             out["url"] = resolved.pop("url")
+        if "headers" in resolved:
+            out["headers"] = resolved.pop("headers")
+    # Copilot allows a `tools` allowlist per server.
+    return _passthrough_mcp(resolved, out, extra_allowed={"tools"})
 
-    # Pass through remaining fields
+
+def _mcp_for_codex(resolved: dict) -> dict:
+    """Codex CLI MCP format (TOML `[mcp_servers.NAME]` block, see build_codex_mcp_toml).
+
+    Codex infers transport from field presence and has no `type`/`transport`
+    field. `env_vars` is a list of env-var NAMES to pass through; `env` is a
+    map of name→value. We pass both through if provided.
+    """
+    out = {}
+    if "command" in resolved:
+        out["command"] = resolved.pop("command")
+        for k in ("args", "env", "env_vars"):
+            if k in resolved:
+                out[k] = resolved.pop(k)
+    elif "url" in resolved:
+        out["url"] = resolved.pop("url")
+        for k in ("bearer_token_env_var", "http_headers"):
+            if k in resolved:
+                out[k] = resolved.pop(k)
+    # Common pass-through fields
+    for k in (
+        "enabled", "enabled_tools", "disabled_tools",
+        "default_tools_approval_mode", "startup_timeout_sec",
+        "tool_timeout_sec",
+    ):
+        if k in resolved:
+            out[k] = resolved.pop(k)
     resolved.pop("name", None)
-    for k, v in resolved.items():
-        if k in ("type",):
-            continue  # codex doesn't use "type", it uses "transport"
-        out[k] = v
+    resolved.pop("type", None)
+    # Drop unknown Codex fields silently rather than emitting invalid TOML keys.
     return out
 
 
 def _mcp_for_gemini(resolved: dict, transport: str) -> dict:
-    """Gemini MCP format: {command, args} for stdio, {url} for SSE, {httpUrl} for HTTP."""
+    """Gemini CLI MCP format (nested under `mcpServers` in settings.json)."""
     out = {}
     if transport == "stdio":
-        if "command" in resolved:
-            out["command"] = resolved.pop("command")
-        if "args" in resolved:
-            out["args"] = resolved.pop("args")
-        if "env" in resolved:
-            out["env"] = resolved.pop("env")
+        for k in ("command", "args", "env", "cwd"):
+            if k in resolved:
+                out[k] = resolved.pop(k)
     elif transport == "sse":
         if "url" in resolved:
             out["url"] = resolved.pop("url")
+        if "headers" in resolved:
+            out["headers"] = resolved.pop("headers")
     else:
         # http → Gemini uses httpUrl
         if "url" in resolved:
             out["httpUrl"] = resolved.pop("url")
+        if "headers" in resolved:
+            out["headers"] = resolved.pop("headers")
 
-    # Pass through remaining fields
-    resolved.pop("name", None)
-    for k, v in resolved.items():
-        if k in ("type",):
-            continue
-        out[k] = v
-    return out
+    for k in ("timeout", "trust"):
+        if k in resolved:
+            out[k] = resolved.pop(k)
+
+    # Drop foreign-harness fields like env_vars, bearer_token_env_var, etc.
+    return _passthrough_mcp(resolved, out)
+
+
+def build_codex_mcp_toml(name: str, entry: dict) -> str:
+    """Render a Codex MCP entry as `[mcp_servers.NAME]` TOML block."""
+    lines = [f"[mcp_servers.{name}]"]
+    inline_env = entry.pop("env", None) if isinstance(entry.get("env"), dict) else None
+    for key, value in entry.items():
+        lines.append(f"{key} = {_toml_value(value)}")
+    if inline_env:
+        lines.append(f"[mcp_servers.{name}.env]")
+        for k, v in inline_env.items():
+            lines.append(f"{k} = {_toml_value(v)}")
+    return "\n".join(lines) + "\n"
 
 
 def build_mcp(source_dir: Path, harnesses: list[str], dry_run: bool = False, defaults: dict = None) -> dict:
@@ -769,7 +979,10 @@ def build_mcp(source_dir: Path, harnesses: list[str], dry_run: bool = False, def
 
         for source_file in source_files:
             content = source_file.read_text(encoding="utf-8")
-            out_name = source_file.stem + ".json"
+            server_name = source_file.stem
+            # Codex emits TOML snippets; everyone else emits JSON.
+            out_ext = ".toml" if harness == "codex" else ".json"
+            out_name = server_name + out_ext
 
             if source_file.suffix == ".md" or content.startswith("---"):
                 fields, body = parse_frontmatter(content)
@@ -777,14 +990,27 @@ def build_mcp(source_dir: Path, harnesses: list[str], dry_run: bool = False, def
                     entry = build_mcp_entry(fields, harness)
                     if entry is None:
                         continue
-                    result = json.dumps(entry, indent=2)
+                    # Honor an explicit `name` override; otherwise use filename stem.
+                    name_override = resolve_field(fields, harness, "name")
+                    final_name = str(name_override) if name_override else server_name
+                    if harness == "codex":
+                        result = build_codex_mcp_toml(final_name, entry)
+                    else:
+                        result = json.dumps(entry, indent=2)
                 else:
                     # No frontmatter in .md — skip
                     continue
             elif source_file.suffix == ".json":
-                # Plain JSON passthrough
-                result = content.strip()
-                out_name = source_file.name
+                if harness == "codex":
+                    # Codex doesn't accept raw JSON — try to convert.
+                    try:
+                        data = json.loads(content)
+                    except json.JSONDecodeError:
+                        continue
+                    result = build_codex_mcp_toml(server_name, data)
+                else:
+                    result = content.strip()
+                    out_name = source_file.name
             else:
                 continue
 

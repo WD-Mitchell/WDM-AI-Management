@@ -127,10 +127,10 @@ Specify which harnesses to sync to. If omitted, syncs to all detected harnesses.
 
 | Target | Deploy method | Location |
 |--------|--------------|----------|
-| `copilot` | Symlinks | `.github/copilot/agents/`, `.copilot/` |
-| `claude` | Symlinks | `.claude/agents/`, `.claude/rules/` |
-| `codex` | Symlinks | `.codex/agents/`, `.codex/instructions/` |
-| `gemini` | Concatenation | `.gemini/GEMINI.md` |
+| `copilot` | Symlinks + generated | `.github/agents/*.agent.md`, `.github/skills/`, `.github/copilot-instructions.md` (project); `~/.copilot/{agents,skills,instructions,mcp-config.json}` (global) |
+| `claude` | Symlinks + generated | `.claude/{agents,skills,rules,commands,hooks}/`; `.mcp.json` at repo root (project only) |
+| `codex` | Symlinks + merged TOML | `.codex/agents/*.toml`, `~/.agents/skills/`; merged into `.codex/config.toml` (`[mcp_servers.*]`) |
+| `gemini` | Native subagents + merged JSON | `.gemini/agents/`, `.gemini/skills/`; merged into `.gemini/settings.json` (`mcpServers`) |
 
 ### Sync Flags
 
