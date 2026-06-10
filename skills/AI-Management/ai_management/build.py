@@ -49,7 +49,7 @@ AGENT_SCHEMAS = {
         "tools", "disallowedTools", "permissionMode", "color",
     ],
     "codex": [
-        # NOTE: emitted as TOML, not Markdown frontmatter (see build_agents_codex_toml).
+        # NOTE: emitted as TOML, not Markdown frontmatter (see build_codex_agent_toml).
         "name", "description", "model",
         "model_reasoning_effort", "sandbox_mode",
         "mcp_servers", "nickname_candidates",
@@ -567,7 +567,7 @@ def _toml_value(value) -> str:
     return '"' + _toml_escape(sv) + '"'
 
 
-def build_codex_agent_toml(fields: dict, body: str, defaults: dict = None) -> str | None:
+def build_codex_agent_toml(fields: dict, body: str, defaults: dict = None, source_name: str = "") -> str | None:
     """
     Build a Codex `.toml` subagent file from universal source.
 
@@ -594,6 +594,20 @@ def build_codex_agent_toml(fields: dict, body: str, defaults: dict = None) -> st
 
     if not resolved.get("name") and not instructions:
         return None
+    required = {
+        "name": resolved.get("name"),
+        "description": resolved.get("description"),
+        "developer_instructions": instructions,
+    }
+    missing = [key for key, value in required.items() if not str(value or "").strip()]
+    if missing:
+        location = f" in {source_name}" if source_name else ""
+        raise ValueError(
+            "Codex custom agent files must define "
+            f"{', '.join(missing)}{location}. "
+            "OpenAI Codex requires standalone TOML agents with name, "
+            "description, and developer_instructions."
+        )
 
     lines = []
     # Preferred field ordering for readability
@@ -637,7 +651,7 @@ def build_agents(source_dir: Path, harnesses: list[str], dry_run: bool = False, 
             fields, body = parse_frontmatter(content)
 
             if harness == "codex":
-                result = build_codex_agent_toml(fields, body, defaults=defaults)
+                result = build_codex_agent_toml(fields, body, defaults=defaults, source_name=str(source_file))
             else:
                 result = build_md_file(fields, body, harness, schema, defaults=defaults)
             if result is None:
@@ -1172,7 +1186,11 @@ def main(argv=None):
     if defaults and not args.quiet:
         print(f"Loaded model defaults from {defaults_path}")
 
-    stats = builder(source_dir, harnesses, dry_run=args.dry_run, defaults=defaults)
+    try:
+        stats = builder(source_dir, harnesses, dry_run=args.dry_run, defaults=defaults)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
     if not args.quiet:
         for harness, count in stats.items():
             print(f"{harness}: {count} {args.type} built")

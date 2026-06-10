@@ -31,8 +31,8 @@ Specify one or more, or omit to sync all:
 |---------|---------------------|---------------|
 | Copilot | `./install.sh sync copilot` | Symlinks to `.github/copilot/` |
 | Claude  | `./install.sh sync claude`  | Symlinks to `.claude/` |
-| Codex   | `./install.sh sync codex`   | Symlinks to `.codex/` |
-| Gemini  | `./install.sh sync gemini`  | Concatenation to `.gemini/GEMINI.md` |
+| Codex   | `./install.sh sync codex`   | One TOML file per agent in `.codex/agents/`; MCP merged into `.codex/config.toml` |
+| Gemini  | `./install.sh sync gemini`  | Native subagents in `.gemini/agents/`; MCP merged into `.gemini/settings.json` |
 
 ### Flags
 
@@ -178,7 +178,7 @@ The build step transforms universal source files into per-harness versions befor
 
 ### Field resolution priority
 
-1. `{harness}_{field}` — highest (e.g., `codex_model: o3`)
+1. `{harness}_{field}` — highest (e.g., `codex_model: gpt-5.5`)
 2. `{h1}_{h2}_{field}` — multi-prefix (e.g., `codex_copilot_description: ...`)
 3. `global_{field}` — all harnesses (e.g., `global_model: claude-sonnet-4`)
 4. `{field}` — base fallback (e.g., `model: default`)
@@ -207,10 +207,10 @@ codex_model: __omit__    # No model field in Codex output
 
 | Harness | Allowed agent fields |
 |---------|---------------------|
-| Copilot | `name`, `description`, `model`, `reasoning_effort` |
-| Claude  | `name`, `description`, `model`, `effort` |
-| Codex   | `name`, `description`, `model`, `model_reasoning_effort`, `sandbox_mode`, `mcp_servers`, `nickname_candidates`, `developer_instructions` |
-| Gemini  | `name`, `description`, `model`, `thinkingLevel` |
+| Copilot | `name`, `description`, `model`, `tools`, `mcp-servers`, `user-invocable`, `disable-model-invocation`, `target`, `metadata` |
+| Claude  | `name`, `description`, `model`, `effort`, `tools`, `disallowedTools`, `permissionMode`, `color` |
+| Codex   | `name`, `description`, `developer_instructions` required; optional `model`, `model_reasoning_effort`, `sandbox_mode`, `mcp_servers`, `nickname_candidates` |
+| Gemini  | `name`, `description`, `model`, `kind`, `tools`, `temperature`, `max_turns`, `thinkingConfig` |
 
 Unrecognized fields are silently dropped.
 
@@ -254,8 +254,8 @@ Backup dirs are never removed by `--purge`.
 
 ## Important Notes
 
-- Source of truth: `~/ai-management/{type}/*.md` — edit here, then sync
+- Source of truth: `~/ai-management/{type}/*.md` — edit here, then sync. Codex agent sources are still Markdown, but generated Codex agents are standalone `.toml` files.
 - Built artifacts in `~/ai-management/{type}/{harness}/` are generated — don't edit
-- Copilot/Claude/Codex use **symlinks**; Gemini uses **concatenation**
+- Copilot/Claude/Codex/Gemini use **symlinks** for per-file content
 - Use `--dry-run` when unsure what a command will do
 - `.ai-management` project file stores the active template for auto-detection
