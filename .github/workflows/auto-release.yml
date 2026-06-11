@@ -1,0 +1,127 @@
+name: Auto Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - package.json
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Create release from package version
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Compare package version with npm
+        id: versions
+        run: |
+          package_name="$(node -p "require('./package.json').name")"
+          package_version="$(node -p "require('./package.json').version")"
+          published_version="$(
+            npm view "$package_name" version --json 2>/dev/null \
+              | node -e 'let s = ""; process.stdin.on("data", d => s += d); process.stdin.on("end", () => { try { const value = JSON.parse(s); console.log(Array.isArray(value) ? value.at(-1) : (value || "")); } catch { console.log(""); } });'
+          )"
+          if [ -z "$published_version" ]; then
+            published_version="0.0.0"
+          fi
+
+          should_release="$(
+            node - "$package_version" "$published_version" <<'NODE'
+          function parse(version) {
+            const clean = String(version || "0.0.0").replace(/^v/, "");
+            const [core, prerelease = ""] = clean.split("-", 2);
+            const nums = core.split(".").map((part) => Number.parseInt(part, 10) || 0);
+            while (nums.length < 3) nums.push(0);
+            return { nums: nums.slice(0, 3), prerelease };
+          }
+
+          function compareIdentifiers(left, right) {
+            const leftNumber = /^\d+$/.test(left);
+            const rightNumber = /^\d+$/.test(right);
+            if (leftNumber && rightNumber) return Number(left) - Number(right);
+            if (leftNumber) return -1;
+            if (rightNumber) return 1;
+            return left.localeCompare(right);
+          }
+
+          function compareVersions(left, right) {
+            const a = parse(left);
+            const b = parse(right);
+            for (let i = 0; i < 3; i += 1) {
+              if (a.nums[i] !== b.nums[i]) return a.nums[i] - b.nums[i];
+            }
+            if (!a.prerelease && b.prerelease) return 1;
+            if (a.prerelease && !b.prerelease) return -1;
+            if (!a.prerelease && !b.prerelease) return 0;
+            const aParts = a.prerelease.split(".");
+            const bParts = b.prerelease.split(".");
+            const len = Math.max(aParts.length, bParts.length);
+            for (let i = 0; i < len; i += 1) {
+              if (aParts[i] === undefined) return -1;
+              if (bParts[i] === undefined) return 1;
+              const diff = compareIdentifiers(aParts[i], bParts[i]);
+              if (diff !== 0) return diff;
+            }
+            return 0;
+          }
+
+          console.log(compareVersions(process.argv[2], process.argv[3]) > 0 ? "true" : "false");
+          NODE
+          )"
+
+          tag="v${package_version}"
+          echo "package_name=$package_name" >> "$GITHUB_OUTPUT"
+          echo "package_version=$package_version" >> "$GITHUB_OUTPUT"
+          echo "published_version=$published_version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "should_release=$should_release" >> "$GITHUB_OUTPUT"
+
+          echo "Package: $package_name"
+          echo "package.json version: $package_version"
+          echo "Published npm version: $published_version"
+          echo "Should release: $should_release"
+
+      - name: Check release tag
+        if: steps.versions.outputs.should_release == 'true'
+        run: |
+          tag="${{ steps.versions.outputs.tag }}"
+          if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+            echo "::error::${tag} already exists, but npm is behind. Resolve the existing tag/release before publishing."
+            exit 1
+          fi
+
+      - name: Create GitHub release
+        if: steps.versions.outputs.should_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.versions.outputs.tag }}
+          VERSION: ${{ steps.versions.outputs.package_version }}
+        run: |
+          gh release create "$TAG" \
+            --target "$GITHUB_SHA" \
+            --title "WDM AI Management ${VERSION}" \
+            --notes "Release ${VERSION} of WDM AI Management."
+
+      - name: Skip release
+        if: steps.versions.outputs.should_release != 'true'
+        run: |
+          echo "package.json version ${{ steps.versions.outputs.package_version }} is not greater than published npm version ${{ steps.versions.outputs.published_version }}."
