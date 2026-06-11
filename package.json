@@ -1,6 +1,6 @@
 {
   "name": "@wdm-uk/ai-management",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Manage AI agents, skills, MCP servers, rules, workflows, hooks, harnesses, and templates from one local source of truth.",
   "bin": {
     "wdm-ai": "bin/wdm-ai"
