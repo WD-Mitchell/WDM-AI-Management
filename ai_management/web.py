@@ -8267,7 +8267,7 @@ def render_hook_editor(name: str, raw: str, path: Path, scope: str, installed: b
     </label>
     <label class="wide">
       <span>Script body</span>
-      <textarea class="file-editor hook-script-editor" name="hook_script" rows="22" spellcheck="false" placeholder="cd &quot;$(git rev-parse --show-toplevel)&quot; || exit 0&#10;wdm ai sync">{escape_textarea(parsed['script'])}</textarea>
+      <textarea class="file-editor hook-script-editor" name="hook_script" rows="22" spellcheck="false" placeholder="cd &quot;$(git rev-parse --show-toplevel)&quot; || exit 0&#10;wdm-ai sync">{escape_textarea(parsed['script'])}</textarea>
     </label>
   </form>
 </section>"""

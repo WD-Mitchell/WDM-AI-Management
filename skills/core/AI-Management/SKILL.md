@@ -5,7 +5,7 @@ description: Use the WDM AI Management CLI and web UI to manage shared agents, s
 
 # AI Management
 
-Use the `wdm` CLI to manage AI assistant configuration from the shared source of truth in `~/.wdm`.
+Use the `wdm-ai` CLI to manage AI assistant configuration from the shared source of truth in `~/.wdm`.
 
 ## When To Use
 
@@ -20,32 +20,32 @@ Use this skill when the user wants to:
 ## Primary Commands
 
 ```bash
-wdm ai
+wdm-ai
 ```
 
 Launches the local web UI and opens it in the default browser.
 
 ```bash
-wdm ai --reload
+wdm-ai --reload
 ```
 
 Launches the web UI with auto-reload while editing the app/source files.
 
 ```bash
-wdm ai sync
+wdm-ai sync
 ```
 
 Builds and syncs installed content into the current project for enabled harnesses.
 
 ```bash
-wdm ai sync -g
-wdm ai sync --global
+wdm-ai sync -g
+wdm-ai sync --global
 ```
 
 Builds and syncs installed content globally into the user's home directory.
 
 ```bash
-wdm ai bootstrap
+wdm-ai bootstrap
 ```
 
 Copies bundled source files into `~/.wdm`, installs this AI Management skill, and syncs it into enabled global harness skill locations.
@@ -57,7 +57,7 @@ Copies bundled source files into `~/.wdm`, installs this AI Management skill, an
 Run:
 
 ```bash
-wdm ai
+wdm-ai
 ```
 
 Use the UI for day-to-day management. Prefer the form view for normal editing and file view when exact raw file control is needed.
@@ -67,19 +67,19 @@ Use the UI for day-to-day management. Prefer the form view for normal editing an
 From the target project directory:
 
 ```bash
-wdm ai sync
+wdm-ai sync
 ```
 
 Use `--dry-run` first when checking what will change:
 
 ```bash
-wdm ai sync --dry-run
+wdm-ai sync --dry-run
 ```
 
 ### Sync Globally
 
 ```bash
-wdm ai sync -g
+wdm-ai sync -g
 ```
 
 This deploys globally installed items into global harness locations.
@@ -87,16 +87,16 @@ This deploys globally installed items into global harness locations.
 ### Install Content
 
 ```bash
-wdm ai --installed
-wdm ai --install-group default
-wdm ai --install-agent api-designer,code-reviewer
-wdm ai --install-skill AI-Management
+wdm-ai --installed
+wdm-ai --install-group default
+wdm-ai --install-agent api-designer,code-reviewer
+wdm-ai --install-skill AI-Management
 ```
 
 Then sync:
 
 ```bash
-wdm ai sync
+wdm-ai sync
 ```
 
 ### Import Or Duplicate Items
@@ -104,7 +104,7 @@ wdm ai sync
 Use the web UI:
 
 ```bash
-wdm ai
+wdm-ai
 ```
 
 The list pages include Create and Import actions. Preview an item to duplicate it.
@@ -127,7 +127,7 @@ The source of truth is `~/.wdm`:
 
 ## Notes
 
-- Use `wdm ai sync --help` for sync flags.
-- Use `wdm ai --help` for install/list commands.
-- Prefer editing through `wdm ai` unless the user explicitly asks for direct file changes.
+- Use `wdm-ai sync --help` for sync flags.
+- Use `wdm-ai --help` for install/list commands.
+- Prefer editing through `wdm-ai` unless the user explicitly asks for direct file changes.
 - Do not hand-edit generated harness output when the source item exists in `~/.wdm`; edit the source and sync again.

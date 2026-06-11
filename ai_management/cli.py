@@ -11,8 +11,8 @@ from .utils import CLIError, CONTENT_TYPES, GROUPS_DIR, HARNESS_DEFINITIONS, TEM
 
 
 def install_usage() -> None:
-    print("Usage: wdm ai [options]")
-    print("       wdm ai sync [targets] [flags]")
+    print("Usage: wdm-ai [options]")
+    print("       wdm-ai sync [targets] [flags]")
     print()
     print("Local web GUI and installer for AI Management content.")
     print()
@@ -68,7 +68,7 @@ def install_usage() -> None:
     print("  Web UI:")
     print("  web                          Run the local web GUI")
     print("    flags:   --host <host>, --port <port>, --open, --reload")
-    print("  wdm ai                       Run the local web GUI and open it in the browser")
+    print("  wdm-ai                       Run the local web GUI and open it in the browser")
     print("    flags:   --host <host>, --port <port>, --no-open, --reload")
     print("  bootstrap                    Copy bundled files to ~/.wdm and install this skill globally")
     print("    flags:   --force, --no-sync, --quiet")
@@ -76,15 +76,15 @@ def install_usage() -> None:
     print("  -h, --help                   Show this help")
     print()
     print("Examples:")
-    print("  wdm ai --install                           # install defaults")
-    print("  wdm ai --install-skill AI-Management")
-    print("  wdm ai --install-group default")
-    print("  wdm ai --install-all-skills")
-    print("  wdm ai --reload")
-    print("  wdm ai bootstrap")
-    print("  wdm-ai --no-open                         # shortcut for wdm ai --no-open")
+    print("  wdm-ai --install                           # install defaults")
+    print("  wdm-ai --install-skill AI-Management")
+    print("  wdm-ai --install-group default")
+    print("  wdm-ai --install-all-skills")
+    print("  wdm-ai --reload")
+    print("  wdm-ai bootstrap")
+    print("  wdm-ai --no-open")
     print()
-    print("Without arguments, wdm ai launches the local web GUI.")
+    print("Without arguments, wdm-ai launches the local web GUI.")
 
 
 def list_groups() -> None:
@@ -204,7 +204,7 @@ def web_cli(argv: Sequence[str], open_by_default: bool = False) -> int:
         elif arg == "--reload":
             reload = True
         elif arg in {"-h", "--help"}:
-            print("Usage: wdm ai [--host 127.0.0.1] [--port 8765] [--no-open] [--reload]")
+            print("Usage: wdm-ai [--host 127.0.0.1] [--port 8765] [--no-open] [--reload]")
             return 0
         else:
             raise CLIError(f"Unknown web option: {arg}")
@@ -226,7 +226,7 @@ def bootstrap_cli(argv: Sequence[str]) -> int:
         elif arg == "--quiet":
             quiet = True
         elif arg in {"-h", "--help"}:
-            print("Usage: wdm ai bootstrap [--force] [--no-sync] [--quiet]")
+            print("Usage: wdm-ai bootstrap [--force] [--no-sync] [--quiet]")
             return 0
         else:
             raise CLIError(f"Unknown bootstrap option: {arg}")
@@ -263,7 +263,7 @@ def main(argv: Sequence[str] = None) -> int:
             return 0
         if argv and argv[0] == "ai":
             return ai_cli(argv[1:])
-        raise CLIError("Use `wdm ai ...` for AI Management commands, or `wdm-ai ...` as the shortcut.")
+        raise CLIError("Use `wdm-ai ...` for AI Management commands.")
     except KeyboardInterrupt:
         print()
         err("Cancelled")

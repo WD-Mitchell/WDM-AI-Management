@@ -1,0 +1,95 @@
+name: Update Homebrew Tap
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish to Homebrew, such as v0.1.0."
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  TAP_REPOSITORY: WD-Mitchell/homebrew-wdm
+  FORMULA_NAME: wdm-ai-management.rb
+
+jobs:
+  update-tap:
+    name: Update formula
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Resolve release tag
+        id: release
+        run: |
+          tag="${{ github.event.release.tag_name || inputs.tag }}"
+          if [ -z "$tag" ]; then
+            echo "::error::A release tag is required."
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout source release
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.release.outputs.tag }}
+
+      - name: Generate formula
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          SOURCE_REPOSITORY: ${{ github.repository }}
+        run: |
+          url="https://github.com/${SOURCE_REPOSITORY}/archive/refs/tags/${TAG}.tar.gz"
+          sha="$(curl -fsSL "$url" | shasum -a 256 | awk '{print $1}')"
+          if [ -z "$sha" ]; then
+            echo "::error::Failed to calculate release tarball SHA256."
+            exit 1
+          fi
+          export RELEASE_SHA256="$sha"
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import re
+
+          formula = pathlib.Path("Formula/wdm-ai-management.rb")
+          output = pathlib.Path("/tmp/wdm-ai-management.rb")
+          tag = os.environ["TAG"]
+          repo = os.environ["SOURCE_REPOSITORY"]
+          sha = os.environ["RELEASE_SHA256"]
+          text = formula.read_text(encoding="utf-8")
+          text = re.sub(
+              r'url ".*"',
+              f'url "https://github.com/{repo}/archive/refs/tags/{tag}.tar.gz"',
+              text,
+          )
+          text = re.sub(r'sha256 ".*"', f'sha256 "{sha}"', text)
+          output.write_text(text, encoding="utf-8")
+          PY
+
+      - name: Checkout Homebrew tap
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.TAP_REPOSITORY }}
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Commit formula update
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          mkdir -p homebrew-tap/Formula
+          cp /tmp/wdm-ai-management.rb "homebrew-tap/Formula/${FORMULA_NAME}"
+          cd homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet -- "Formula/${FORMULA_NAME}"; then
+            echo "Formula is already up to date."
+            exit 0
+          fi
+          git add "Formula/${FORMULA_NAME}"
+          git commit -m "Update wdm-ai-management ${TAG}"
+          git push

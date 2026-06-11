@@ -31,7 +31,7 @@ from .utils import (
 
 
 def sync_usage() -> None:
-    print("Usage: wdm ai sync [targets] [flags]")
+    print("Usage: wdm-ai sync [targets] [flags]")
     print()
     print("Targets: " + " ".join(CONFIGURED_HARNESSES))
     print("Default targets: " + " ".join(ALL_HARNESSES))
@@ -49,10 +49,10 @@ def sync_usage() -> None:
     print("  -h, --help               Show this help")
     print()
     print("Examples:")
-    print("  wdm ai sync")
-    print("  wdm ai sync -g")
-    print("  wdm ai sync copilot codex --dry-run")
-    print("  wdm ai sync --group default --refresh")
+    print("  wdm-ai sync")
+    print("  wdm-ai sync -g")
+    print("  wdm-ai sync copilot codex --dry-run")
+    print("  wdm-ai sync --group default --refresh")
 
 
 def parse_sync_args(argv: Sequence[str]) -> SyncOptions:
@@ -454,7 +454,7 @@ def sync_copilot_rules_project(options: SyncOptions) -> None:
     if not sections:
         return
     body = (
-        "<!-- MANAGED BY wdm ai sync — DO NOT EDIT MANUALLY -->\n\n"
+        "<!-- MANAGED BY wdm-ai sync — DO NOT EDIT MANUALLY -->\n\n"
         "# Custom Instructions\n\n"
         + "\n".join(sections)
     )

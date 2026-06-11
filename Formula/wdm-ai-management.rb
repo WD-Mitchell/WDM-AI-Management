@@ -9,15 +9,14 @@ class WdmAiManagement < Formula
 
   def install
     libexec.install Dir["*"]
-    bin.install_symlink libexec/"bin/wdm" => "wdm"
     bin.install_symlink libexec/"bin/wdm-ai" => "wdm-ai"
   end
 
   def post_install
-    system bin/"wdm", "ai", "bootstrap", "--quiet"
+    system bin/"wdm-ai", "bootstrap", "--quiet"
   end
 
   test do
-    system bin/"wdm", "ai", "--help"
+    system bin/"wdm-ai", "--help"
   end
 end
