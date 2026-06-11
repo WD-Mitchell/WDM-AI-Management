@@ -2,6 +2,10 @@
   "name": "@wdm-uk/ai-management",
   "version": "1.0.0",
   "description": "Manage AI agents, skills, MCP servers, rules, workflows, hooks, harnesses, and templates from one local source of truth.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/WD-Mitchell/WDM-AI-Management"
+  },
   "bin": {
     "wdm-ai": "bin/wdm-ai"
   },
