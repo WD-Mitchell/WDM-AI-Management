@@ -70,11 +70,21 @@ jobs:
           output.write_text(text, encoding="utf-8")
           PY
 
+      - name: Create GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.WDM_DEPLOY_APP_CLIENT_ID }}
+          private-key: ${{ secrets.WDM_DEPLOY_APP_PRIVATE_KEY }}
+          owner: WD-Mitchell
+          repositories: homebrew-wdm
+          permission-contents: write
+
       - name: Checkout Homebrew tap
         uses: actions/checkout@v4
         with:
           repository: ${{ env.TAP_REPOSITORY }}
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
           path: homebrew-tap
 
       - name: Commit formula update
