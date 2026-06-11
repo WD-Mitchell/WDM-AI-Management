@@ -1,0 +1,16 @@
+name: skill-standard
+type: skills
+description: Default skill documentation sections.
+sections:
+- title: When To Use
+  level: 2
+- title: Workflow
+  level: 2
+- title: Examples
+  level: 2
+- title: Best Practices
+  level: 2
+- title: Output Rules
+  level: 2
+- title: Troubleshooting
+  level: 2

@@ -1,0 +1,16 @@
+**/__pycache__/
+**/*.pyc
+.git/
+.gitignore
+.pytest_cache/
+.DS_Store
+
+agents/
+groups/
+hooks/core/
+mcp/core/
+rules/core/
+workflows/core/
+skills/core/*
+!skills/core/AI-Management/
+!skills/core/AI-Management/**

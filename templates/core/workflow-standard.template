@@ -1,0 +1,10 @@
+name: workflow-standard
+type: workflows
+description: Default workflow sections.
+sections:
+- title: Steps
+  level: 2
+- title: Guidelines
+  level: 2
+- title: Output
+  level: 2

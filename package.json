@@ -1,0 +1,35 @@
+{
+  "name": "@wdm/ai-management",
+  "version": "0.1.0",
+  "description": "Manage AI agents, skills, MCP servers, rules, workflows, hooks, harnesses, and templates from one local source of truth.",
+  "bin": {
+    "wdm": "./bin/wdm",
+    "wdm-ai": "./bin/wdm-ai"
+  },
+  "files": [
+    "ai_management",
+    "bin",
+    "defaults.conf",
+    "flags.md",
+    "harnesses",
+    "skills/core/AI-Management",
+    "templates/core",
+    "README.md",
+    "!**/__pycache__",
+    "!**/*.pyc"
+  ],
+  "scripts": {
+    "ai": "wdm ai",
+    "web": "wdm ai --no-open",
+    "sync": "wdm ai sync",
+    "postinstall": "./bin/wdm ai bootstrap --quiet"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "license": "MIT"
+}

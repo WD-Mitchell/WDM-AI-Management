@@ -1,0 +1,56 @@
+{
+  "name": "copilot",
+  "label": "GitHub Copilot CLI",
+  "builtin": true,
+  "renderers": {
+    "agents": "markdown",
+    "mcp": "json"
+  },
+  "schemas": {
+    "agents": ["name", "description", "model", "tools", "mcp-servers", "user-invocable", "disable-model-invocation", "target", "metadata"],
+    "skills": ["name", "description", "license", "allowed-tools"],
+    "rules": ["name", "description", "applyTo"],
+    "workflows": ["name", "description"]
+  },
+  "field_mappings": {
+    "agents": {
+      "mcp_servers": "mcp-servers",
+      "user_invocable": "user-invocable",
+      "disable_model_invocation": "disable-model-invocation"
+    },
+    "skills": {
+      "allowed_tools": "allowed-tools"
+    },
+    "rules": {
+      "globs": "applyTo",
+      "paths": "applyTo"
+    }
+  },
+  "models": {
+    "agents": ["gpt-5", "gpt-5-mini", "claude-opus-4.6", "claude-sonnet-4.6", "gemini-3.1-pro"]
+  },
+  "outputs": {
+    "agents": {"extension": ".md", "destination_name": "{stem}.agent.md"},
+    "skills": {"directory": true},
+    "rules": {"extension": ".md", "project_bundle": ".github/copilot-instructions.md", "global_extension": ".instructions.md"},
+    "hooks": {"directory": false},
+    "mcp": {"extension": ".json"}
+  },
+  "sync": {
+    "paths": {
+      "project": {
+        "agents": ".github/agents/{stem}.agent.md",
+        "skills": ".github/skills/{name}/",
+        "rules": ".github/copilot-instructions.md",
+        "hooks": ".github/hooks/{name}"
+      },
+      "global": {
+        "agents": ".copilot/agents/{stem}.agent.md",
+        "skills": ".copilot/skills/{name}/",
+        "rules": ".copilot/instructions/{stem}.instructions.md",
+        "hooks": ".copilot/hooks/{name}",
+        "mcp": ".copilot/mcp-config.json"
+      }
+    }
+  }
+}

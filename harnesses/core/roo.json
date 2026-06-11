@@ -1,0 +1,64 @@
+{
+  "name": "roo",
+  "label": "Roo Code",
+  "builtin": true,
+  "default_enabled": false,
+  "auto_enable": true,
+  "detect": {
+    "paths": ["~/.roo", ".roo", ".roomodes"]
+  },
+  "renderers": {
+    "agents": "markdown",
+    "mcp": "json"
+  },
+  "schemas": {
+    "agents": ["slug", "name", "description", "roleDefinition", "whenToUse", "customInstructions", "groups"],
+    "skills": ["name", "description"],
+    "rules": ["name", "description"],
+    "workflows": ["name", "description"],
+    "mcp": ["name", "description", "type", "command", "args", "cwd", "env", "url", "headers", "alwaysAllow", "disabled", "timeout", "watchPaths", "disabledTools"]
+  },
+  "field_mappings": {
+    "agents": {
+      "role_definition": "roleDefinition",
+      "when_to_use": "whenToUse",
+      "custom_instructions": "customInstructions"
+    },
+    "mcp": {
+      "always_allow": "alwaysAllow",
+      "watch_paths": "watchPaths",
+      "disabled_tools": "disabledTools"
+    }
+  },
+  "models": {
+    "agents": ["default", "anthropic/claude-sonnet-4.6", "openai/gpt-5.5", "google/gemini-3.1-pro"]
+  },
+  "outputs": {
+    "agents": {"extension": ".md"},
+    "skills": {"directory": true},
+    "rules": {"extension": ".md"},
+    "workflows": {"extension": ".md"},
+    "mcp": {"extension": ".json", "merge": "mcp.json"}
+  },
+  "sync": {
+    "paths": {
+      "project": {
+        "agents": ".roo/agents/{name}.md",
+        "skills": ".roo/skills/{name}/",
+        "rules": ".roo/rules/{name}.md",
+        "workflows": ".roo/commands/{name}.md",
+        "mcp": ".roo/mcp.json"
+      },
+      "global": {
+        "agents": ".roo/agents/{name}.md",
+        "skills": ".roo/skills/{name}/",
+        "rules": ".roo/rules/{name}.md",
+        "workflows": ".roo/commands/{name}.md",
+        "mcp": ".roo/mcp.json"
+      }
+    },
+    "skip": {
+      "agents_roomodes": "Roo custom modes are usually managed in .roomodes/custom_modes files; per-agent markdown is a managed approximation until a Roo mode renderer is added."
+    }
+  }
+}

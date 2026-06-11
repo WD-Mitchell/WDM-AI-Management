@@ -20,7 +20,7 @@ You author one Markdown file per item. The build system translates it into each 
 │  You are a senior code reviewer...                                  │
 └──────────────────────────────────┬──────────────────────────────────┘
                                    │
-                          install.sh sync
+                          wdm ai sync
                      (builds + deploys)
                                    │
        ┌────────────┬──────────────┼───────────────┬────────────┐
@@ -51,18 +51,43 @@ Maintaining four parallel sets of config files by hand is error-prone. This repo
 
 ## Quick Start
 
-### 1. Get the repo
+### 1. Install
 
 ```bash
-git clone https://github.com/<your-fork>/ai-management ~/ai-management
-cd ~/ai-management
+# npm
+npm install -g @wdm/ai-management
+
+# bun
+bun install -g @wdm/ai-management
+
+# Homebrew
+brew tap WD-Mitchell/wdm
+brew install wdm-ai-management
 ```
 
-(Or fork this repo and clone your fork — the `--pull` command later will pull updates from whatever you configure as `AI_MANAGEMENT_REPO`.)
+All installers expose the `wdm` command. Installation bootstraps `~/.wdm`,
+installs the AI Management skill globally, and syncs that skill into enabled
+global harness skill locations.
 
-### 2. Author your first item
+For source checkouts:
 
-Create `agents/code-reviewer.md`:
+```bash
+git clone https://github.com/WD-Mitchell/WDM-AI-Management ~/.wdm-dev
+cd ~/.wdm-dev
+bin/wdm ai bootstrap
+```
+
+### 2. Open the Web UI
+
+```bash
+wdm ai
+```
+
+This launches the local web UI and opens it in your default browser.
+
+### 3. Author your first item
+
+Create `agents/core/code-reviewer.md`:
 
 ```markdown
 ---
@@ -75,23 +100,26 @@ You are an expert code reviewer. Focus on correctness, security,
 and maintainability. Do not comment on style preferences.
 ```
 
-### 3. Install & deploy
+### 4. Install & deploy
 
 ```bash
 # Interactive menu
-./install.sh
+wdm
 
 # Or install everything in the default group
-./install.sh --install
+wdm ai --install
 
 # Sync to the current project
-./install.sh sync
+wdm ai sync
 
 # Or sync globally (writes to ~/.claude/, ~/.codex/, etc.)
-./install.sh sync -g
+wdm ai sync -g
 
 # Preview without writing
-./install.sh sync --dry-run
+wdm ai sync --dry-run
+
+# Local web GUI
+wdm ai --reload
 ```
 
 ## Key Concepts
@@ -100,6 +128,7 @@ and maintainability. Do not comment on style preferences.
 |---------|-------------|
 | **Content types** | `agents`, `skills`, `rules`, `workflows`, `hooks`, `mcp` |
 | **Harnesses** | `copilot`, `claude`, `codex`, `gemini` |
+| **Harness definitions** | Files in `harnesses/core/*.json` that define schemas, output extensions, and sync layout |
 | **Groups** | Named sets of items (`groups/*.group`) for batch install |
 | **Templates** | Combine groups + individual items (`templates/*.template`) — apply to a project in one command |
 | **Global install** | Deploy to user home (`~/.claude/`, `~/.copilot/`, `~/.codex/`, `~/.gemini/`) |
@@ -118,7 +147,7 @@ Every source file uses YAML frontmatter. Fields can be overridden per-harness us
 | `global_<field>` | All harnesses | `global_model: claude-sonnet-4.6` |
 | `<field>` | Base fallback | `model: default` |
 
-Harness prefixes are: `copilot`, `claude`, `codex`, `gemini`, plus `global`.
+Harness prefixes come from `harnesses/core/*.json`. The built-in prefixes are `copilot`, `claude`, `codex`, `gemini`, plus `global`.
 
 ### Model Tiers
 
@@ -134,7 +163,42 @@ Use tier tokens for portable model references. They resolve per-harness via `def
 
 ### Per-Harness Field Schemas
 
-The build system whitelists only fields documented by each tool, so unknown or harness-specific keys don't leak into the wrong output. See `skills/AI-Management/ai_management/build.py` (`AGENT_SCHEMAS`, `SKILL_SCHEMAS`, etc.) for the authoritative lists.
+The build system whitelists only fields documented by each tool, so unknown or harness-specific keys don't leak into the wrong output. See `ai_management/build.py` (`AGENT_SCHEMAS`, `SKILL_SCHEMAS`, etc.) for the authoritative lists.
+
+### Custom Harnesses
+
+Harnesses are defined by JSON files in `harnesses/core/`. Each file names the harness, declares per-content schemas, output extensions, and sync destination templates. Add a new `harnesses/core/<name>.json`, then use that harness name as a sync target and frontmatter prefix.
+
+At minimum, a custom Markdown-based harness can define:
+
+```json
+{
+  "name": "mytool",
+  "label": "My Tool",
+  "schemas": {
+    "agents": ["name", "description", "model"],
+    "skills": ["name", "description"]
+  },
+  "outputs": {
+    "agents": {"extension": ".md"},
+    "skills": {"directory": true}
+  },
+  "sync": {
+    "paths": {
+      "project": {
+        "agents": ".mytool/agents/{name}.md",
+        "skills": ".mytool/skills/{name}/"
+      },
+      "global": {
+        "agents": ".mytool/agents/{name}.md",
+        "skills": ".mytool/skills/{name}/"
+      }
+    }
+  }
+}
+```
+
+The built-in harnesses are also represented as files there. Codex and MCP still use specialized renderers where their formats require TOML or merged config output.
 
 ## Groups
 
@@ -157,79 +221,61 @@ code-style
 github
 ```
 
-Install a group: `./install.sh --install-group default`
+Install a group: `wdm ai --install-group default`
 
 ## Templates
 
-Templates (`templates/*.template`) combine groups and individual items for a complete project setup:
+Templates are reusable field and body presets for items such as agents, skills, MCP servers, rules, workflows, and hooks. Manage them in the web UI:
 
-```ini
-# example.template
-
-[groups]
-default
-
-[agents]
-frontend-developer
-api-designer
-
-[skills]
-web-coder
-
-[mcp]
-browser-tools
+```bash
+wdm ai
 ```
 
-Apply to current project: `./install.sh --template example`
-
-This writes a `.ai-management` file in the project root, so subsequent `./install.sh sync` runs re-apply the same template automatically.
+Groups now cover install sets. Use `wdm ai --install-group <name>` and `wdm ai sync --group <name>` for repo or project sets.
 
 ## CLI Reference
 
 ### Install / manage
 
 ```
-install.sh                          # interactive menu
-install.sh --list                   # list available skills
-install.sh --list-groups            # list groups
-install.sh --list-templates         # list templates
-install.sh --installed              # show installed items
+wdm ai                          # interactive menu
+wdm ai --list                   # list available skills
+wdm ai --list-groups            # list groups
+wdm ai --list-templates         # list templates
+wdm ai --installed              # show installed items
 
-install.sh --install                # install the "default" group
-install.sh --install-all            # install everything (all types)
-install.sh --install-all-<type>     # install all of one type
+wdm ai --install                # install the "default" group
+wdm ai --install-all            # install everything (all types)
+wdm ai --install-all-<type>     # install all of one type
                                     #   (agents | skills | rules | workflows | hooks | mcp)
 
-install.sh --install-agent     <names>   # comma-separated
-install.sh --install-skill     <names>
-install.sh --install-rule      <names>
-install.sh --install-workflow  <names>
-install.sh --install-hook      <names>
-install.sh --install-mcp       <names>
+wdm ai --install-agent     <names>   # comma-separated
+wdm ai --install-skill     <names>
+wdm ai --install-rule      <names>
+wdm ai --install-workflow  <names>
+wdm ai --install-hook      <names>
+wdm ai --install-mcp       <names>
 
-install.sh --install-group         <name>
-install.sh --install-group-agents  <name>   # restrict to one type
-install.sh --install-group-skills  <name>
-install.sh --install-group-rules   <name>
-install.sh --install-group-workflows <name>
-install.sh --install-group-hooks   <name>
-install.sh --install-group-mcp     <name>
+wdm ai --install-group         <name>
+wdm ai --install-group-agents  <name>   # restrict to one type
+wdm ai --install-group-skills  <name>
+wdm ai --install-group-rules   <name>
+wdm ai --install-group-workflows <name>
+wdm ai --install-group-hooks   <name>
+wdm ai --install-group-mcp     <name>
 
-install.sh --template <name>             # apply template to current project
-install.sh --template <name> --global    # apply template globally
-
-install.sh --uninstall-agent    <names>
-install.sh --uninstall-skill    <names>
-install.sh --uninstall-rule     <names>
-install.sh --uninstall-workflow <names>
-install.sh --uninstall-hook     <names>
-install.sh --uninstall-mcp      <names>
+wdm ai --uninstall-agent    <names>
+wdm ai --uninstall-skill    <names>
+wdm ai --uninstall-rule     <names>
+wdm ai --uninstall-workflow <names>
+wdm ai --uninstall-hook     <names>
+wdm ai --uninstall-mcp      <names>
 ```
 
 ### Sync / deploy
 
 ```
-install.sh sync [targets] [flags]
+wdm ai sync [targets] [flags]
 
   targets:  copilot codex claude gemini       (default: all)
 
@@ -242,11 +288,18 @@ install.sh sync [targets] [flags]
       --restore-latest Restore the most recent backup
       --pull           Pull latest content from GitHub before syncing
       --group <name>   Sync only items in a group (can be repeated)
-      --template <name> Sync items defined in a template
   -h, --help           Sync-specific help
 ```
 
 See [`flags.md`](flags.md) for a longer reference with examples.
+
+### Web GUI
+
+```
+wdm ai [--host 127.0.0.1] [--port 8765] [--no-open] [--reload]
+```
+
+The web GUI is a lightweight local interface for browsing, selecting, editing, previewing, and dry-running sync for agents, skills, MCP servers, groups, and templates. It uses the same file-backed source of truth and build/sync code as the CLI; there is no database or frontend build step.
 
 ## Supported Harnesses
 
@@ -263,71 +316,51 @@ All formats are sourced from each tool's official documentation. The merged-conf
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `AI_MANAGEMENT_HOME` | Directory holding source content & state when running outside the repo checkout | `~/ai-management` |
+| `AI_MANAGEMENT_HOME` | Override the source content and state directory | `~/.wdm` |
 | `AI_MANAGEMENT_REPO` | GitHub `owner/repo` slug used by `sync --pull` | _unset_ — required to use `--pull` |
 | `AI_MANAGEMENT_BRANCH` | Branch to fetch from | `main` |
 
 Set these in your shell profile or per-invocation:
 
 ```bash
-AI_MANAGEMENT_REPO=your-org/ai-management ./install.sh sync --pull
+AI_MANAGEMENT_REPO=your-org/ai-management wdm ai sync --pull
 ```
 
 ## Directory Structure
 
 ```
-ai-management/
-├── agents/              # Agent definitions (one *.md per agent)
-├── skills/              # Skill directories (each contains SKILL.md + assets)
-│   └── AI-Management/   # The management tool itself (this skill)
-│       ├── install.sh   # Python entrypoint (also symlinked from repo root)
-│       ├── build.py     # Standalone CLI for the build engine
-│       ├── SKILL.md     # Detailed docs / internal reference
-│       └── ai_management/
-│           ├── build.py    # Build engine (frontmatter parsing, field resolution, per-harness emitters)
-│           ├── cli.py      # CLI argument parsing & routing
-│           ├── groups.py   # Group & template resolution
-│           ├── install.py  # Install tracking
-│           ├── pull.py     # GitHub pull/download (--pull)
-│           ├── sync.py     # Sync / deploy to harnesses
-│           ├── tui.py      # Interactive TUI menus
-│           └── utils.py    # Shared utilities (colors, paths, dataclasses)
-├── rules/               # Rule definitions (*.md)
-├── workflows/           # Workflow definitions (*.md) — slash-commands for Claude
-├── hooks/               # Hook scripts (e.g., post-merge)
-├── mcp/                 # MCP server definitions (*.md with frontmatter, or *.json)
+.wdm/
+├── agents/core/         # Agent definitions (*.md)
+├── skills/core/         # Skill directories; AI-Management is only SKILL.md
+├── rules/core/          # Rule definitions (*.md)
+├── workflows/core/      # Workflow definitions (*.md)
+├── hooks/core/          # Hook scripts
+├── mcp/core/            # MCP server definitions (*.md with frontmatter, or *.json)
+├── harnesses/core/      # Harness definitions (*.json)
 ├── groups/              # Group files (*.group)
-├── templates/           # Template files (*.template)
+├── templates/core/      # Item editor templates (*.template)
 ├── defaults.conf        # Model tier → actual model mapping (per harness)
-├── install.sh           # Symlink → skills/AI-Management/install.sh
 ├── README.md
 └── flags.md             # Long-form CLI reference
 ```
 
+The installed package also includes `ai_management/`, which is the Python runtime behind the `wdm ai` and `wdm-ai` commands. That runtime is not part of the installed AI Management skill.
+
 > **Requires:** Python 3.10 or newer (standard library only — no pip dependencies)
-
-## Per-Project Config
-
-When you apply a template or group to a project, a `.ai-management` file is created at the project root:
-
-```
-example
-```
-
-On subsequent `./install.sh sync` runs (without flags), this file is auto-detected and the same template is re-applied. Add it to `.gitignore` or commit it — your choice.
 
 ## Backups
 
-Every sync that modifies files first writes a `.zip` snapshot to `~/ai-management/backups/` (or `$AI_MANAGEMENT_HOME/backups/`). Skip with `--no-backup`. Restore with `--restore` (interactive picker) or `--restore-latest`.
+Every sync that modifies files first writes a `.zip` snapshot to `~/.wdm/backups/` (or `$AI_MANAGEMENT_HOME/backups/`). Skip with `--no-backup`. Restore with `--restore` (interactive picker) or `--restore-latest`.
 
 ## Contributing
 
 Contributions welcome. Items most useful to share back:
 
-- New agent / skill / rule definitions (`agents/*.md`, `skills/<name>/SKILL.md`, `rules/*.md`)
+- New agent / skill / rule definitions (`agents/core/*.md`, `skills/core/<name>/SKILL.md`, `rules/core/*.md`)
 - New groups and templates (`groups/*.group`, `templates/*.template`)
-- MCP server definitions (`mcp/*.md`)
-- Bug fixes and additional harness support in `skills/AI-Management/ai_management/`
+- MCP server definitions (`mcp/core/*.md`)
+- Harness definitions (`harnesses/core/*.json`)
+- Bug fixes and additional harness support in `ai_management/`
 
 When adding a new harness or schema field, please cite the upstream documentation in a comment so future maintainers can verify it.
 

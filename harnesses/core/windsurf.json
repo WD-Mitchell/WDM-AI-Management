@@ -1,0 +1,62 @@
+{
+  "name": "windsurf",
+  "label": "Windsurf / Devin Desktop",
+  "builtin": true,
+  "default_enabled": false,
+  "auto_enable": true,
+  "detect": {
+    "commands": ["windsurf"],
+    "paths": ["~/.codeium/windsurf"]
+  },
+  "renderers": {
+    "agents": "markdown",
+    "mcp": "json"
+  },
+  "schemas": {
+    "agents": ["name", "description", "model"],
+    "skills": ["name", "description"],
+    "rules": ["name", "description", "trigger", "globs"],
+    "workflows": ["name", "description"]
+  },
+  "field_mappings": {
+    "rules": {
+      "activation": "trigger"
+    }
+  },
+  "models": {
+    "agents": ["default", "claude-sonnet-4.6", "gpt-5.5", "gemini-3.1-pro"]
+  },
+  "outputs": {
+    "agents": {"extension": ".md"},
+    "skills": {"directory": true},
+    "rules": {"extension": ".md"},
+    "workflows": {"extension": ".md"},
+    "hooks": {"directory": false},
+    "mcp": {"extension": ".json", "merge": "mcp_config.json"}
+  },
+  "sync": {
+    "paths": {
+      "project": {
+        "agents": ".windsurf/agents/{name}.md",
+        "skills": ".windsurf/skills/{name}/",
+        "rules": ".devin/rules/{name}.md",
+        "workflows": ".windsurf/workflows/{name}.md",
+        "hooks": ".windsurf/hooks/{name}",
+        "mcp": ".windsurf/mcp_config.json"
+      },
+      "global": {
+        "agents": ".codeium/windsurf/agents/{name}.md",
+        "skills": ".codeium/windsurf/skills/{name}/",
+        "rules": ".codeium/windsurf/rules/{name}.md",
+        "workflows": ".codeium/windsurf/global_workflows/{name}.md",
+        "hooks": ".codeium/windsurf/hooks/{name}",
+        "mcp": ".codeium/windsurf/mcp_config.json"
+      }
+    },
+    "skip": {
+      "agents_project": "Windsurf documents AGENTS.md for project/directory scoped instructions; per-agent files are managed for conversion/preview until an AGENTS.md merger is added.",
+      "rules_global": "The documented global rule file is ~/.codeium/windsurf/memories/global_rules.md. This harness uses per-file rules to avoid overwriting user-managed aggregate content.",
+      "mcp_project": "Windsurf documents ~/.codeium/windsurf/mcp_config.json as the canonical MCP config. Project path is provided for managed workspace-local experiments."
+    }
+  }
+}

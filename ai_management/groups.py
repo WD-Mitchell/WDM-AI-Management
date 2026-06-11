@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
 
-from .utils import CONTENT_ROOT, CONTENT_TYPES, GROUPS_DIR, MCP_SOURCE_EXTENSIONS, TEMPLATES_DIR, dedupe, strip_inline_comment
+from .utils import CONTENT_TYPES, GROUPS_DIR, MCP_SOURCE_EXTENSIONS, TEMPLATES_DIR, content_source_dir, dedupe, strip_inline_comment
 
 
 def parse_section_file(path: Path) -> Tuple[str, Dict[str, List[str]]]:
@@ -35,7 +35,7 @@ def template_description(path: Path) -> str:
 
 
 def get_all_type(content_type: str) -> List[str]:
-    base = CONTENT_ROOT / content_type
+    base = content_source_dir(content_type)
     if not base.exists():
         return []
     items: List[str] = []
@@ -59,7 +59,7 @@ def get_all_type(content_type: str) -> List[str]:
 
 
 def resolve_item_path(content_type: str, name: str) -> Path:
-    base = CONTENT_ROOT / content_type
+    base = content_source_dir(content_type)
     if content_type == "skills":
         return base / name
     if content_type == "hooks":
@@ -90,7 +90,7 @@ def parse_group(group_file: Path) -> List[str]:
 
 
 def skill_description(name: str) -> str:
-    skill_dir = CONTENT_ROOT / "skills" / name
+    skill_dir = content_source_dir("skills") / name
     for file_name in ("SKILL.md", "skill.md"):
         path = skill_dir / file_name
         if not path.exists():

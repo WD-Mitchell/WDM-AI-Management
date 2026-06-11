@@ -1,0 +1,10 @@
+name: rule-standard
+type: rules
+description: Default rule sections.
+sections:
+- title: Requirements
+  level: 2
+- title: Examples
+  level: 2
+- title: Exceptions
+  level: 2

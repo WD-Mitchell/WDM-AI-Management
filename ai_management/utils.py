@@ -1,29 +1,29 @@
 from __future__ import annotations
 
 import os
+import json
 import shutil
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
-ALL_HARNESSES = ["copilot", "claude", "codex", "gemini"]
-HARNESS_SET = set(ALL_HARNESSES)
+BUILTIN_HARNESSES = ["copilot", "claude", "codex", "gemini"]
 CONTENT_TYPES = ["agents", "skills", "rules", "workflows", "hooks", "mcp"]
-MANAGED_DIRS = ["agents", "skills", "hooks", "rules", "workflows", "mcp", "groups", "templates"]
+MANAGED_DIRS = ["agents", "skills", "hooks", "rules", "workflows", "mcp", "groups", "templates", "harnesses"]
+CORE_SOURCE_DIR = "core"
+CORE_CONTENT_TYPES = set(CONTENT_TYPES)
 DISPLAY_FIELDS = {"color", "emoji", "vibe"}
 DEFAULT_TIERS = {"default", "default-small", "default-large"}
 OMIT_SENTINEL = "__omit__"
-HARNESS_SKIP_DIRS = HARNESS_SET | {"__pycache__", "backups"}
 MCP_SOURCE_EXTENSIONS = (".md", ".json", ".yaml", ".yml")
-MCP_BUILD_EXTENSIONS = (".md", ".json")
+MCP_BUILD_EXTENSIONS = MCP_SOURCE_EXTENSIONS
 SYNC_TEMPLATE_FILE = ".ai-management"
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 SCRIPT_DIR = PACKAGE_DIR.parent
-ENTRYPOINT = SCRIPT_DIR / "install.sh"
-REPO_ROOT = SCRIPT_DIR.parent.parent
-AI_MGMT_HOME = Path(os.environ.get("AI_MANAGEMENT_HOME", str(Path.home() / "ai-management"))).expanduser()
+REPO_ROOT = SCRIPT_DIR
+AI_MGMT_HOME = Path(os.environ.get("AI_MANAGEMENT_HOME", str(Path.home() / ".wdm"))).expanduser()
 INSTALLED_DIR = AI_MGMT_HOME / "installed"
 BACKUP_DIR = AI_MGMT_HOME / "backups"
 GITHUB_REPO = os.environ.get("AI_MANAGEMENT_REPO", "")
@@ -31,9 +31,6 @@ GITHUB_BRANCH = os.environ.get("AI_MANAGEMENT_BRANCH", "main")
 
 
 def detect_content_root() -> Path:
-    required = ["agents", "skills", "groups", "templates"]
-    if all((REPO_ROOT / name).exists() for name in required):
-        return REPO_ROOT
     return AI_MGMT_HOME
 
 
@@ -41,6 +38,76 @@ CONTENT_ROOT = detect_content_root()
 GROUPS_DIR = CONTENT_ROOT / "groups"
 TEMPLATES_DIR = CONTENT_ROOT / "templates"
 DEFAULTS_FILE = CONTENT_ROOT / "defaults.conf"
+
+
+def content_source_dir(content_type: str) -> Path:
+    base = CONTENT_ROOT / content_type
+    if content_type in CORE_CONTENT_TYPES:
+        return base / CORE_SOURCE_DIR
+    return base
+
+
+def harness_source_dir() -> Path:
+    return CONTENT_ROOT / "harnesses" / CORE_SOURCE_DIR
+
+
+def harness_detected(definition: dict) -> bool:
+    detect = definition.get("detect") if isinstance(definition, dict) else None
+    if not isinstance(detect, dict):
+        return False
+    for command in detect.get("commands") or []:
+        if shutil.which(str(command)):
+            return True
+    for raw_path in detect.get("paths") or []:
+        path = Path(str(raw_path)).expanduser()
+        if path.exists():
+            return True
+    return False
+
+
+def harness_enabled(definition: dict) -> bool:
+    enabled = definition.get("enabled") if isinstance(definition, dict) else None
+    if isinstance(enabled, bool):
+        return enabled
+    if definition.get("auto_enable") and harness_detected(definition):
+        return True
+    if "default_enabled" in definition:
+        return bool(definition.get("default_enabled"))
+    return bool(definition.get("builtin", False))
+
+
+def load_harness_definitions(include_disabled: bool = False) -> Dict[str, dict]:
+    definitions: Dict[str, dict] = {}
+    for harness in BUILTIN_HARNESSES:
+        definitions[harness] = {"name": harness, "label": harness.title(), "builtin": True}
+    base = harness_source_dir()
+    if not base.exists():
+        return definitions
+    for path in sorted(base.glob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        name = str(data.get("name") or path.stem).strip()
+        if not name:
+            continue
+        data["name"] = name
+        data.setdefault("label", name.title())
+        data["detected"] = harness_detected(data)
+        definitions[name] = data
+    if include_disabled:
+        return definitions
+    return {name: data for name, data in definitions.items() if harness_enabled(data)}
+
+
+ALL_HARNESS_DEFINITIONS = load_harness_definitions(include_disabled=True)
+HARNESS_DEFINITIONS = {name: data for name, data in ALL_HARNESS_DEFINITIONS.items() if harness_enabled(data)}
+ALL_HARNESSES = list(HARNESS_DEFINITIONS.keys())
+CONFIGURED_HARNESSES = list(ALL_HARNESS_DEFINITIONS.keys())
+HARNESS_SET = set(CONFIGURED_HARNESSES)
+HARNESS_SKIP_DIRS = HARNESS_SET | {"__pycache__", "backups"}
 
 USE_COLOR = sys.stdout.isatty() and os.environ.get("TERM", "") not in {"", "dumb"}
 BOLD = "\033[1m" if USE_COLOR else ""

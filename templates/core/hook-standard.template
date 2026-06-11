@@ -1,0 +1,10 @@
+name: hook-standard
+type: hooks
+description: Default shell hook script template.
+fields:
+  hook_shebang: '#!/usr/bin/env bash'
+  hook_description: Describe when this hook runs and what it does.
+  hook_script: |
+    set -euo pipefail
+
+sections: []

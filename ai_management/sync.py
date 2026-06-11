@@ -13,12 +13,15 @@ from .install import load_installed_type
 from .pull import pull_from_github
 from .utils import (
     ALL_HARNESSES,
+    ALL_HARNESS_DEFINITIONS,
     BACKUP_DIR,
+    CONFIGURED_HARNESSES,
     CONTENT_TYPES,
     CONTENT_ROOT,
     SYNC_TEMPLATE_FILE,
     CLIError,
     SyncOptions,
+    content_source_dir,
     ensure_dir,
     info,
     log,
@@ -28,9 +31,10 @@ from .utils import (
 
 
 def sync_usage() -> None:
-    print("Usage: install.sh sync [targets] [flags]")
+    print("Usage: wdm ai sync [targets] [flags]")
     print()
-    print("Targets: copilot codex claude gemini")
+    print("Targets: " + " ".join(CONFIGURED_HARNESSES))
+    print("Default targets: " + " ".join(ALL_HARNESSES))
     print()
     print("Flags:")
     print("  -g, --global             Sync globally (~/) instead of the current project")
@@ -42,15 +46,13 @@ def sync_usage() -> None:
     print("      --restore-latest     Restore the most recent backup")
     print("      --pull               Download latest content from GitHub")
     print("      --group <name>       Sync only items in the named group")
-    print("      --template <name>    Sync items defined in a template")
     print("  -h, --help               Show this help")
     print()
     print("Examples:")
-    print("  install.sh sync")
-    print("  install.sh sync -g")
-    print("  install.sh sync copilot codex --dry-run")
-    print("  install.sh sync --group default --refresh")
-    print("  install.sh sync --template example")
+    print("  wdm ai sync")
+    print("  wdm ai sync -g")
+    print("  wdm ai sync copilot codex --dry-run")
+    print("  wdm ai sync --group default --refresh")
 
 
 def parse_sync_args(argv: Sequence[str]) -> SyncOptions:
@@ -76,20 +78,17 @@ def parse_sync_args(argv: Sequence[str]) -> SyncOptions:
             options.selected_groups.append(argv[index + 1])
             index += 1
         elif arg == "--template":
-            if index + 1 >= len(argv) or argv[index + 1].startswith("--"):
-                raise CLIError("Error: --template requires a name")
-            options.template = argv[index + 1]
-            index += 1
+            raise CLIError("Repo templates have been removed. Use --group for repo sets.")
         elif arg == "--restore-latest":
             options.restore_latest = True
         elif arg == "--restore":
             options.restore = True
             if index + 1 < len(argv):
                 nxt = argv[index + 1]
-                if not nxt.startswith("--") and nxt not in ALL_HARNESSES:
+                if not nxt.startswith("--") and nxt not in CONFIGURED_HARNESSES:
                     options.restore_file = nxt
                     index += 1
-        elif arg in ALL_HARNESSES:
+        elif arg in CONFIGURED_HARNESSES:
             options.targets.append(arg)
         elif arg in {"-h", "--help"}:
             sync_usage()
@@ -170,6 +169,8 @@ def managed_paths_for(options: SyncOptions, target: str) -> Dict[str, Path]:
         if options.claude_mcp_file:
             paths["mcp"] = options.claude_mcp_file
         return paths
+    if target not in {"gemini"}:
+        return generic_managed_paths_for(options, target)
     # Gemini: native subagents only (no GEMINI.md monolith).
     return {
         "agents": options.gemini_dir / "agents",
@@ -178,29 +179,54 @@ def managed_paths_for(options: SyncOptions, target: str) -> Dict[str, Path]:
     }
 
 
+def generic_path_templates(target: str, global_mode: bool) -> Dict[str, str]:
+    definition = ALL_HARNESS_DEFINITIONS.get(target, {})
+    sync = definition.get("sync", {}) if isinstance(definition, dict) else {}
+    paths = sync.get("paths", {}) if isinstance(sync, dict) else {}
+    if not isinstance(paths, dict):
+        return {}
+    mode_key = "global" if global_mode else "project"
+    mode_paths = paths.get(mode_key)
+    if isinstance(mode_paths, dict):
+        return {str(k): str(v) for k, v in mode_paths.items()}
+    return {str(k): str(v) for k, v in paths.items() if isinstance(v, str)}
+
+
+def generic_skip_reason(definition: dict, content_type: str, global_mode: bool) -> str:
+    mode = "global" if global_mode else "project"
+    skip_sources = []
+    sync = definition.get("sync", {}) if isinstance(definition, dict) else {}
+    if isinstance(sync, dict) and isinstance(sync.get("skip"), dict):
+        skip_sources.append(sync["skip"])
+    if isinstance(definition, dict) and isinstance(definition.get("skip"), dict):
+        skip_sources.append(definition["skip"])
+    keys = (f"{content_type}_{mode}", content_type)
+    for source in skip_sources:
+        for key in keys:
+            value = source.get(key)
+            if value:
+                return str(value)
+    return ""
+
+
+def generic_managed_paths_for(options: SyncOptions, target: str) -> Dict[str, Path]:
+    definition = ALL_HARNESS_DEFINITIONS.get(target, {})
+    paths = {}
+    for content_type, template in generic_path_templates(target, options.global_mode).items():
+        if generic_skip_reason(definition, content_type, options.global_mode):
+            continue
+        if "{" in template:
+            parent = template.split("{", 1)[0].rstrip("/")
+            paths[content_type] = options.target_root / parent
+        else:
+            paths[content_type] = options.target_root / template
+    return paths
+
+
 def sync_resolve_selection(options: SyncOptions) -> None:
     raw = {content_type: [] for content_type in CONTENT_TYPES}
     group_names = list(options.selected_groups)
-    explicit = bool(options.template or options.selected_groups)
-    if options.template:
-        tpl = template_path(options.template)
-        if not tpl.exists():
-            raise CLIError(f"Template file not found: {tpl}")
-        info(f"Applying template: \033[1m{options.template}\033[0m")
-        apply_template_sections(tpl, raw, group_names)
-        if not options.global_mode and not options.dry_run:
-            (options.target_root / SYNC_TEMPLATE_FILE).write_text(options.template + "\n", encoding="utf-8")
-            log(f"Saved template reference → {options.target_root / SYNC_TEMPLATE_FILE}")
-    elif not group_names and not options.global_mode:
-        saved = options.target_root / SYNC_TEMPLATE_FILE
-        if saved.exists():
-            template_name = saved.read_text(encoding="utf-8").splitlines()[0].strip() if saved.read_text(encoding="utf-8").splitlines() else ""
-            if template_name:
-                tpl = template_path(template_name)
-                if tpl.exists():
-                    info(f"Using project template: \033[1m{template_name}\033[0m")
-                    apply_template_sections(tpl, raw, group_names)
-                    explicit = True
+    explicit = bool(options.selected_groups)
     for group_name in list(dict.fromkeys(group_names)):
         grp = group_path(group_name)
         if not grp.exists():
@@ -428,7 +454,7 @@ def sync_copilot_rules_project(options: SyncOptions) -> None:
     if not sections:
         return
     body = (
-        "<!-- MANAGED BY ai-management install.sh sync — DO NOT EDIT MANUALLY -->\n\n"
+        "<!-- MANAGED BY wdm ai sync — DO NOT EDIT MANUALLY -->\n\n"
         "# Custom Instructions\n\n"
         + "\n".join(sections)
     )
@@ -673,6 +699,66 @@ def sync_gemini(options: SyncOptions) -> None:
     sync_gemini_mcp(options)
 
 
+def built_name_for(harness: str, content_type: str, source_path: Path) -> str:
+    definition = ALL_HARNESS_DEFINITIONS.get(harness, {})
+    outputs = definition.get("outputs", {}) if isinstance(definition, dict) else {}
+    output = outputs.get(content_type, {}) if isinstance(outputs, dict) else {}
+    extension = output.get("extension") if isinstance(output, dict) else None
+    if content_type == "skills":
+        return source_path.name
+    if extension:
+        return source_path.stem + str(extension)
+    return source_path.name
+
+
+def format_harness_path(template: str, source_path: Path) -> Path:
+    return Path(template.format(name=source_path.stem, stem=source_path.stem, file=source_path.name))
+
+
+def sync_generic_harness(options: SyncOptions, harness: str) -> None:
+    definition = ALL_HARNESS_DEFINITIONS.get(harness)
+    if not definition:
+        warn(f"No harness definition found for {harness}; skipping.")
+        return
+    print()
+    print(f"\033[1m── Syncing to {definition.get('label', harness)} ──\033[0m")
+    templates = generic_path_templates(harness, options.global_mode)
+    if not templates:
+        warn(f"Harness {harness} has no sync paths defined.")
+        return
+    if options.refresh:
+        for path in generic_managed_paths_for(options, harness).values():
+            if path.is_dir():
+                purge_symlinks_in(path)
+    for content_type in CONTENT_TYPES:
+        resolved = options.resolved.get(content_type) or []
+        if not resolved:
+            continue
+        template = templates.get(content_type)
+        if not template:
+            continue
+        skip_reason = generic_skip_reason(definition, content_type, options.global_mode)
+        if skip_reason:
+            warn(f"{definition.get('label', harness)}: skipping {content_type} — {skip_reason}")
+            continue
+        if content_type == "mcp" and "{" not in template:
+            sync_mcp_to(harness, str(definition.get("label", harness)), options.target_root / template, resolved, options.dry_run)
+            continue
+        build_dir = CONTENT_ROOT / content_type / harness
+        if not build_dir.exists():
+            continue
+        count = 0
+        for source_path in resolved:
+            built_path = build_dir / built_name_for(harness, content_type, source_path)
+            if not built_path.exists():
+                continue
+            dest = options.target_root / format_harness_path(template, source_path)
+            make_link(built_path, dest, dry_run=options.dry_run)
+            count += 1
+        if count:
+            log(f"{definition.get('label', harness)}: symlinked {count} {content_type}")
+
+
 def purge_target(options: SyncOptions, target: str) -> None:
     print()
     print(f"\033[1m── Purging {target.capitalize()} ──\033[0m")
@@ -694,8 +780,8 @@ def sync_command(argv: Sequence[str]) -> int:
     sync_init_runtime(options)
     if options.pull:
         pull_from_github()
-    if not (CONTENT_ROOT / "agents").exists():
-        raise CLIError(f"No agents directory found at {CONTENT_ROOT / 'agents'}")
+    if not content_source_dir("agents").exists():
+        raise CLIError(f"No agents source directory found at {content_source_dir('agents')}")
     sync_resolve_selection(options)
     print(f"\033[1m🔄 AI Management Sync — {time.strftime('%Y-%m-%d %H:%M:%S')}\033[0m")
     if options.dry_run:
@@ -731,6 +817,8 @@ def sync_command(argv: Sequence[str]) -> int:
             sync_claude(options)
         elif target == "gemini":
             sync_gemini(options)
+        else:
+            sync_generic_harness(options, target)
     print()
     log("Sync complete.")
     return 0

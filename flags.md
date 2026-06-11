@@ -184,6 +184,6 @@ These are not flags but affect script behavior:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `AI_MANAGEMENT_HOME` | Override the source-of-truth directory | `~/ai-management` |
+| `AI_MANAGEMENT_HOME` | Override the source-of-truth directory | `~/.wdm` |
 | `AI_MANAGEMENT_REPO` | GitHub `org/repo` for `--pull` | *(must be set for pull)* |
 | `AI_MANAGEMENT_BRANCH` | Remote branch to pull from | `main` |

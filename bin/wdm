@@ -1,0 +1,23 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+
+def package_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+def main() -> int:
+    root = package_root()
+    os.environ.setdefault("AI_MANAGEMENT_HOME", str(Path.home() / ".wdm"))
+    sys.path.insert(0, str(root))
+    from ai_management.cli import main as cli_main
+
+    return cli_main(sys.argv[1:])
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,72 @@
+{
+  "name": "claude",
+  "label": "Claude Code",
+  "builtin": true,
+  "renderers": {
+    "agents": "markdown",
+    "mcp": "json"
+  },
+  "schemas": {
+    "agents": ["name", "description", "model", "effort", "tools", "disallowedTools", "permissionMode", "mcpServers", "skills", "hooks", "maxTurns", "memory", "background", "isolation", "initialPrompt", "color"],
+    "skills": ["name", "description", "allowed-tools", "model", "effort", "argument-hint", "disable-model-invocation"],
+    "rules": ["name", "description", "paths", "globs", "alwaysApply"],
+    "workflows": ["name", "description", "model", "effort", "argument-hint", "allowed-tools"]
+  },
+  "field_mappings": {
+    "agents": {
+      "reasoning": "effort",
+      "mcp_servers": "mcpServers",
+      "disallowed_tools": "disallowedTools",
+      "permission_mode": "permissionMode",
+      "max_turns": "maxTurns",
+      "initial_prompt": "initialPrompt"
+    },
+    "skills": {
+      "allowed_tools": "allowed-tools",
+      "argument_hint": "argument-hint",
+      "disable_model_invocation": "disable-model-invocation",
+      "reasoning": "effort"
+    },
+    "rules": {
+      "always_apply": "alwaysApply"
+    },
+    "workflows": {
+      "allowed_tools": "allowed-tools",
+      "argument_hint": "argument-hint",
+      "reasoning": "effort"
+    }
+  },
+  "models": {
+    "agents": ["claude-opus-4.6", "claude-sonnet-4.6", "claude-haiku-4.5"]
+  },
+  "outputs": {
+    "agents": {"extension": ".md"},
+    "skills": {"directory": true},
+    "rules": {"extension": ".md"},
+    "workflows": {"extension": ".md"},
+    "hooks": {"directory": false},
+    "mcp": {"extension": ".json"}
+  },
+  "sync": {
+    "paths": {
+      "project": {
+        "agents": ".claude/agents/{name}.md",
+        "skills": ".claude/skills/{name}/",
+        "rules": ".claude/rules/{name}.md",
+        "workflows": ".claude/commands/{name}.md",
+        "hooks": ".claude/hooks/{name}",
+        "mcp": ".mcp.json"
+      },
+      "global": {
+        "agents": ".claude/agents/{name}.md",
+        "skills": ".claude/skills/{name}/",
+        "rules": ".claude/rules/{name}.md",
+        "workflows": ".claude/commands/{name}.md",
+        "hooks": ".claude/hooks/{name}"
+      }
+    },
+    "skip": {
+      "mcp_global": "Claude Code global MCP lives inside ~/.claude.json and is not overwritten."
+    }
+  }
+}

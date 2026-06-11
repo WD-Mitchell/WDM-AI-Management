@@ -1,0 +1,57 @@
+{
+  "name": "qwen",
+  "label": "Qwen Code",
+  "builtin": true,
+  "default_enabled": false,
+  "auto_enable": true,
+  "detect": {
+    "commands": ["qwen"],
+    "paths": ["~/.qwen"]
+  },
+  "renderers": {
+    "agents": "markdown",
+    "mcp": "json"
+  },
+  "schemas": {
+    "agents": ["name", "description", "model", "provider", "generationConfig", "env"],
+    "skills": ["name", "description"],
+    "rules": ["name", "description"],
+    "workflows": ["name", "description"],
+    "mcp": ["name", "description"]
+  },
+  "field_mappings": {
+    "agents": {
+      "generation_config": "generationConfig"
+    }
+  },
+  "models": {
+    "agents": ["default", "qwen3-coder-plus", "qwen-max", "qwen-plus"]
+  },
+  "outputs": {
+    "agents": {"extension": ".md"},
+    "skills": {"directory": true},
+    "rules": {"extension": ".md"},
+    "workflows": {"extension": ".md"},
+    "mcp": {"extension": ".json"}
+  },
+  "sync": {
+    "paths": {
+      "project": {
+        "agents": ".qwen/agents/{name}.md",
+        "skills": ".qwen/skills/{name}/",
+        "rules": ".qwen/rules/{name}.md",
+        "workflows": ".qwen/workflows/{name}.md"
+      },
+      "global": {
+        "agents": ".qwen/agents/{name}.md",
+        "skills": ".qwen/skills/{name}/",
+        "rules": ".qwen/rules/{name}.md",
+        "workflows": ".qwen/workflows/{name}.md"
+      }
+    },
+    "skip": {
+      "mcp": "Qwen Code project-level MCP support needs confirmation before writing managed MCP files.",
+      "settings": "Global ~/.qwen/settings.json is a merged settings file and is not overwritten by this generic harness."
+    }
+  }
+}

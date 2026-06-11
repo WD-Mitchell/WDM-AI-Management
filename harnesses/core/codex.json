@@ -1,0 +1,47 @@
+{
+  "name": "codex",
+  "label": "OpenAI Codex CLI",
+  "builtin": true,
+  "renderers": {
+    "agents": "codex_agent_toml",
+    "mcp": "codex_mcp_toml"
+  },
+  "schemas": {
+    "agents": ["name", "description", "model", "model_reasoning_effort", "sandbox_mode", "skills", "mcp_servers", "nickname_candidates", "developer_instructions"],
+    "skills": ["name", "description"],
+    "rules": ["name", "description"],
+    "workflows": ["name", "description"]
+  },
+  "field_mappings": {
+    "agents": {
+      "reasoning": "model_reasoning_effort",
+      "sandbox": "sandbox_mode",
+      "mcp_servers": "mcp_servers",
+      "nicknames": "nickname_candidates",
+      "body": "developer_instructions"
+    }
+  },
+  "models": {
+    "agents": ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"]
+  },
+  "outputs": {
+    "agents": {"extension": ".toml"},
+    "skills": {"directory": true},
+    "hooks": {"directory": false},
+    "mcp": {"extension": ".toml", "merge": "config.toml"}
+  },
+  "sync": {
+    "project_root": ".codex",
+    "global_root": ".codex",
+    "paths": {
+      "agents": ".codex/agents/{stem}.toml",
+      "skills": ".agents/skills/{name}/",
+      "hooks": ".codex/hooks/{name}",
+      "mcp": ".codex/config.toml"
+    },
+    "skip": {
+      "rules": "Codex CLI uses AGENTS.md hierarchy for instructions, not a rules/ directory.",
+      "workflows": "Codex CLI has no first-class workflows concept."
+    }
+  }
+}

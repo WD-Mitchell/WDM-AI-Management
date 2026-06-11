@@ -38,3 +38,15 @@ __pycache__/
 
 # Installed item tracking
 installed/
+
+# Local source-of-truth content (do not commit or publish from this app repo)
+/agents/core/**
+/mcp/core/**
+/rules/core/**
+/workflows/core/**
+/hooks/core/**
+/groups/**
+/skills/core/**
+!/skills/core/
+!/skills/core/AI-Management/
+!/skills/core/AI-Management/**

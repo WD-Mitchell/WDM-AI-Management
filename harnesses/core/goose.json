@@ -1,0 +1,59 @@
+{
+  "name": "goose",
+  "label": "Goose",
+  "builtin": true,
+  "default_enabled": false,
+  "auto_enable": true,
+  "detect": {
+    "commands": ["goose"],
+    "paths": ["~/.config/goose"]
+  },
+  "renderers": {
+    "agents": "markdown",
+    "mcp": "json"
+  },
+  "schemas": {
+    "agents": ["name", "description", "model", "provider", "instructions"],
+    "skills": ["name", "description"],
+    "rules": ["name", "description"],
+    "workflows": ["name", "description"],
+    "mcp": ["name", "description", "command", "args", "env", "timeout", "enabled"]
+  },
+  "field_mappings": {
+    "agents": {
+      "body": "instructions"
+    }
+  },
+  "models": {
+    "agents": ["default", "gpt-5.5", "claude-sonnet-4.6", "gemini-3.1-pro"]
+  },
+  "outputs": {
+    "agents": {"extension": ".md"},
+    "skills": {"directory": true},
+    "rules": {"extension": ".md"},
+    "workflows": {"extension": ".yaml"},
+    "mcp": {"extension": ".json"}
+  },
+  "sync": {
+    "paths": {
+      "project": {
+        "agents": ".goose/agents/{name}.md",
+        "skills": ".goose/skills/{name}/",
+        "rules": ".goose/hints/{name}.md",
+        "workflows": ".goose/recipes/{name}.yaml",
+        "mcp": ".goose/extensions/{name}.json"
+      },
+      "global": {
+        "agents": ".config/goose/agents/{name}.md",
+        "skills": ".config/goose/skills/{name}/",
+        "rules": ".config/goose/hints/{name}.md",
+        "workflows": ".config/goose/recipes/{name}.yaml",
+        "mcp": ".config/goose/extensions/{name}.json"
+      }
+    },
+    "skip": {
+      "rules": "Goose project hints are commonly stored in .goosehints. This harness uses per-file hints until a .goosehints merger is added.",
+      "config_yaml": "Goose provider and extension setup is commonly stored in ~/.config/goose/config.yaml; this config avoids overwriting that merged settings file."
+    }
+  }
+}

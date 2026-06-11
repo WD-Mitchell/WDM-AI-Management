@@ -1,1 +1,0 @@
-skills/AI-Management/install.sh

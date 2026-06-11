@@ -1,0 +1,59 @@
+{
+  "name": "gemini",
+  "label": "Gemini CLI",
+  "builtin": true,
+  "renderers": {
+    "agents": "markdown",
+    "mcp": "json"
+  },
+  "schemas": {
+    "agents": ["name", "description", "model", "coreTools", "excludeTools", "allowMCPServers", "excludeMCPServers", "maxSessionTurns", "thinkingLevel", "thinkingBudget", "thinkingConfig"],
+    "skills": ["name", "description"],
+    "rules": ["name", "description", "contextFileName"],
+    "workflows": ["name", "description", "prompt"]
+  },
+  "field_mappings": {
+    "agents": {
+      "tools": "coreTools",
+      "exclude_tools": "excludeTools",
+      "mcp_servers": "allowMCPServers",
+      "exclude_mcp_servers": "excludeMCPServers",
+      "max_turns": "maxSessionTurns",
+      "reasoning": "thinkingLevel",
+      "thinking_budget": "thinkingBudget",
+      "thinking_config": "thinkingConfig"
+    },
+    "rules": {
+      "context_file_name": "contextFileName"
+    },
+    "workflows": {
+      "body": "prompt"
+    }
+  },
+  "models": {
+    "agents": ["gemini-3.1-pro", "gemini-3.1-flash", "gemini-3.1-flash-lite"]
+  },
+  "outputs": {
+    "agents": {"extension": ".md"},
+    "skills": {"directory": true},
+    "mcp": {"extension": ".json", "merge": "settings.json"}
+  },
+  "sync": {
+    "paths": {
+      "project": {
+        "agents": ".gemini/agents/{name}.md",
+        "skills": ".gemini/skills/{name}/",
+        "mcp": ".gemini/settings.json"
+      },
+      "global": {
+        "agents": ".gemini/agents/{name}.md",
+        "skills": ".gemini/skills/{name}/",
+        "mcp": ".gemini/settings.json"
+      }
+    },
+    "skip": {
+      "rules": "Gemini native-subagents mode does not concatenate rules.",
+      "workflows": "Gemini native-subagents mode does not concatenate workflows."
+    }
+  }
+}

@@ -25,12 +25,11 @@ import tempfile
 from pathlib import Path
 from configparser import ConfigParser
 
-from .utils import CONTENT_ROOT
+import yaml
+
+from .utils import ALL_HARNESSES, ALL_HARNESS_DEFINITIONS, CONFIGURED_HARNESSES, HARNESS_SET, CONTENT_ROOT, CORE_SOURCE_DIR, MCP_SOURCE_EXTENSIONS, content_source_dir
 
 # ── Harness definitions ──────────────────────────────────────────
-
-ALL_HARNESSES = ["copilot", "claude", "codex", "gemini"]
-HARNESS_SET = set(ALL_HARNESSES)
 
 # Per-harness field schemas for AGENTS (strict whitelist).
 # Sources of truth (verified May 2026):
@@ -52,13 +51,13 @@ AGENT_SCHEMAS = {
         # NOTE: emitted as TOML, not Markdown frontmatter (see build_codex_agent_toml).
         "name", "description", "model",
         "model_reasoning_effort", "sandbox_mode",
-        "mcp_servers", "nickname_candidates",
+        "skills", "mcp_servers", "nickname_candidates",
         "developer_instructions",
     ],
     "gemini": [
         "name", "description", "model",
         "kind", "tools", "temperature", "max_turns",
-        "thinkingConfig",
+        "thinkingLevel", "thinkingBudget", "thinkingConfig",
     ],
 }
 
@@ -94,6 +93,19 @@ WORKFLOW_SCHEMAS = {
     "gemini": ["name", "description"],
 }
 
+for harness_name, harness_def in ALL_HARNESS_DEFINITIONS.items():
+    schemas = harness_def.get("schemas") if isinstance(harness_def, dict) else None
+    if not isinstance(schemas, dict):
+        continue
+    if isinstance(schemas.get("agents"), list):
+        AGENT_SCHEMAS[harness_name] = schemas["agents"]
+    if isinstance(schemas.get("skills"), list):
+        SKILL_SCHEMAS[harness_name] = schemas["skills"]
+    if isinstance(schemas.get("rules"), list):
+        RULE_SCHEMAS[harness_name] = schemas["rules"]
+    if isinstance(schemas.get("workflows"), list):
+        WORKFLOW_SCHEMAS[harness_name] = schemas["workflows"]
+
 # MCP: all fields pass through (no schema restriction) minus display/override fields
 # Hooks: pass through as-is (no build transform)
 
@@ -112,6 +124,43 @@ SCHEMA_MAP = {
     "rules": RULE_SCHEMAS,
     "workflows": WORKFLOW_SCHEMAS,
 }
+
+
+def field_mappings_for(harness: str, content_type: str) -> dict[str, list[str]]:
+    """
+    Return canonical WDM field -> harness output field mappings.
+
+    Harness configs own this contract. Values may be a string or list of
+    strings so one canonical field can feed multiple harness-native names.
+    """
+    definition = ALL_HARNESS_DEFINITIONS.get(harness, {})
+    mappings = definition.get("field_mappings", {}) if isinstance(definition, dict) else {}
+    type_mappings = mappings.get(content_type, {}) if isinstance(mappings, dict) else {}
+    if not isinstance(type_mappings, dict):
+        return {}
+    normalized: dict[str, list[str]] = {}
+    for source_field, output_fields in type_mappings.items():
+        source = str(source_field or "").strip()
+        if not source:
+            continue
+        if isinstance(output_fields, str):
+            outputs = [output_fields]
+        elif isinstance(output_fields, list):
+            outputs = output_fields
+        else:
+            continue
+        values = [str(item).strip() for item in outputs if str(item).strip()]
+        if values:
+            normalized[source] = values
+    return normalized
+
+
+def mapped_source_fields(harness: str, content_type: str, output_field: str) -> list[str]:
+    sources = []
+    for source_field, output_fields in field_mappings_for(harness, content_type).items():
+        if output_field in output_fields:
+            sources.append(source_field)
+    return sources
 
 
 # ── Defaults loading ────────────────────────────────────────────
@@ -238,77 +287,13 @@ def parse_frontmatter(content: str) -> tuple[dict, str]:
     if body.startswith("\n"):
         body = body[1:]
 
-    fields = {}
-    lines = fm_text.split("\n")
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            i += 1
-            continue
-        match = re.match(r"^([a-zA-Z_][a-zA-Z0-9_.]*)\s*:\s*(.*)$", stripped)
-        if match:
-            key = match.group(1)
-            value = match.group(2).strip()
-
-            # Check for YAML block collection (key: with no value, followed by indented items)
-            if not value:
-                # Peek ahead to determine list vs map vs empty
-                list_items = []
-                map_items = {}
-                j = i + 1
-                while j < len(lines):
-                    next_line = lines[j]
-                    # Stop at non-indented lines (next top-level key or blank)
-                    if next_line and not next_line[0].isspace():
-                        break
-                    next_stripped = next_line.strip()
-                    if not next_stripped or next_stripped.startswith("#"):
-                        j += 1
-                        continue
-                    list_match = re.match(r"^\s+-\s+(.+)$", next_line)
-                    map_match = re.match(r"^\s+([a-zA-Z_][a-zA-Z0-9_.-]*)\s*:\s*(.+)$", next_line)
-                    if list_match:
-                        list_items.append(list_match.group(1).strip().strip("\"'"))
-                        j += 1
-                    elif map_match:
-                        mk = map_match.group(1).strip()
-                        mv = map_match.group(2).strip().strip("\"'")
-                        map_items[mk] = mv
-                        j += 1
-                    else:
-                        break
-                if list_items:
-                    fields[key] = list_items
-                    i = j
-                    continue
-                elif map_items:
-                    fields[key] = map_items
-                    i = j
-                    continue
-                # Empty value, not a list or map
-                fields[key] = ""
-                i += 1
-                continue
-
-            # Handle quoted strings
-            if (value.startswith('"') and value.endswith('"')) or \
-               (value.startswith("'") and value.endswith("'")):
-                value = value[1:-1]
-            # Handle inline YAML arrays: [item1, item2]
-            elif value.startswith("[") and value.endswith("]"):
-                items = [v.strip().strip("\"'") for v in value[1:-1].split(",")]
-                value = items
-            # Handle booleans
-            if value == "true":
-                value = True
-            elif value == "false":
-                value = False
-            fields[key] = value
-        i += 1
-
-    return fields, body
+    try:
+        loaded = yaml.safe_load(fm_text) or {}
+    except yaml.YAMLError:
+        return {}, body
+    if not isinstance(loaded, dict):
+        return {}, body
+    return loaded, body
 
 
 # ── Multi-prefix field resolution ────────────────────────────────
@@ -396,6 +381,38 @@ def resolve_field(fields: dict, harness: str, field_name: str) -> object:
     return None
 
 
+def resolve_output_field(fields: dict, harness: str, content_type: str, output_field: str, body: str = "") -> object:
+    """
+    Resolve a harness-native output field from canonical WDM source fields.
+
+    Explicit harness-native overrides remain supported for migration and
+    exceptional cases, but the preferred path is:
+      canonical field -> harness field_mappings -> output field.
+    """
+    value = resolve_field(fields, harness, output_field)
+    if value is not None:
+        return value
+    for source_field in mapped_source_fields(harness, content_type, output_field):
+        if source_field == "body":
+            body_value = body.strip()
+            if body_value:
+                return body_value
+            continue
+        value = resolve_field(fields, harness, source_field)
+        if value is not None:
+            return value
+    return None
+
+
+def body_is_mapped(harness: str, content_type: str, schema: list[str] | None) -> bool:
+    if not schema:
+        return False
+    for output_field in schema:
+        if "body" in mapped_source_fields(harness, content_type, output_field):
+            return True
+    return False
+
+
 def is_override_key(key: str) -> bool:
     """Check if a key is a harness/global override (should be stripped from output)."""
     targets, _ = parse_key_prefix(key)
@@ -404,36 +421,19 @@ def is_override_key(key: str) -> bool:
 
 # ── Output serialization ─────────────────────────────────────────
 
-def _yaml_scalar(value) -> str:
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, int) and not isinstance(value, bool):
-        return str(value)
-    sv = str(value)
-    if any(c in sv for c in ":#{}[]|>&*!%@`"):
-        return f'"{sv}"'
-    return sv
+def dump_yaml_mapping(value: dict) -> str:
+    dumped = yaml.safe_dump(value, sort_keys=False, allow_unicode=False, default_flow_style=False).strip()
+    return re.sub(r"\n\.\.\.\s*$", "", dumped)
 
 
 def build_frontmatter(resolved: dict) -> str:
     """Serialize resolved fields back to YAML frontmatter."""
-    lines = ["---"]
-    for key, value in resolved.items():
-        if isinstance(value, dict):
-            lines.append(f"{key}:")
-            for sub_key, sub_value in value.items():
-                lines.append(f"  {sub_key}: {_yaml_scalar(sub_value)}")
-        elif isinstance(value, list):
-            lines.append(f"{key}: [{', '.join(_yaml_scalar(v) for v in value)}]")
-        else:
-            lines.append(f"{key}: {_yaml_scalar(value)}")
-    lines.append("---")
-    return "\n".join(lines)
+    return f"---\n{dump_yaml_mapping(resolved)}\n---"
 
 
 # ── Content type builders ────────────────────────────────────────
 
-def build_md_file(fields: dict, body: str, harness: str, schema: list[str] | None, defaults: dict = None) -> str | None:
+def build_md_file(fields: dict, body: str, harness: str, schema: list[str] | None, defaults: dict = None, content_type: str = "") -> str | None:
     """
     Build a harness-specific .md file.
 
@@ -447,7 +447,7 @@ def build_md_file(fields: dict, body: str, harness: str, schema: list[str] | Non
     if schema:
         # Schema-based: only include whitelisted fields
         for field_name in schema:
-            value = resolve_field(fields, harness, field_name)
+            value = resolve_output_field(fields, harness, content_type, field_name, body)
             if value is not None:
                 resolved[field_name] = value
     else:
@@ -469,11 +469,13 @@ def build_md_file(fields: dict, body: str, harness: str, schema: list[str] | Non
     if harness == "gemini":
         resolved = gemini_wrap_thinking(resolved)
 
+    output_body = "" if body_is_mapped(harness, content_type, schema) else body
+
     if resolved:
         frontmatter = build_frontmatter(resolved)
-        return f"{frontmatter}\n\n{body}"
+        return f"{frontmatter}\n\n{output_body}"
     else:
-        return body
+        return output_body
 
 
 def build_json_file(content: str, harness: str) -> str | None:
@@ -541,6 +543,19 @@ def atomic_write(path: Path, content: str):
 
 # ── Type-specific build orchestration ────────────────────────────
 
+def build_output_root(source_dir: Path) -> Path:
+    """Generated harness folders are siblings of `core/`, not children of it."""
+    return source_dir.parent if source_dir.name == CORE_SOURCE_DIR else source_dir
+
+
+def output_extension(harness: str, content_type: str, default: str) -> str:
+    definition = ALL_HARNESS_DEFINITIONS.get(harness, {})
+    outputs = definition.get("outputs", {}) if isinstance(definition, dict) else {}
+    output = outputs.get(content_type, {}) if isinstance(outputs, dict) else {}
+    if isinstance(output, dict) and output.get("extension"):
+        return str(output["extension"])
+    return default
+
 def _toml_escape(value: str) -> str:
     """Escape a string for TOML basic-string output."""
     return value.replace("\\", "\\\\").replace('"', '\\"')
@@ -580,17 +595,16 @@ def build_codex_agent_toml(fields: dict, body: str, defaults: dict = None, sourc
     for field_name in schema:
         if field_name == "developer_instructions":
             continue  # filled from body below
-        value = resolve_field(fields, "codex", field_name)
+        value = resolve_output_field(fields, "codex", "agents", field_name)
         if value is not None:
             resolved[field_name] = value
 
     if defaults:
         resolved = resolve_defaults(resolved, "codex", defaults)
 
-    # Body becomes developer_instructions unless explicitly overridden via frontmatter
-    instructions = resolve_field(fields, "codex", "developer_instructions")
-    if instructions is None:
-        instructions = body.strip()
+    # The universal markdown body is Codex's developer_instructions field.
+    # Do not let frontmatter create a second, divergent instruction source.
+    instructions = body.strip()
 
     if not resolved.get("name") and not instructions:
         return None
@@ -613,7 +627,7 @@ def build_codex_agent_toml(fields: dict, body: str, defaults: dict = None, sourc
     # Preferred field ordering for readability
     preferred = [
         "name", "description", "model", "model_reasoning_effort",
-        "sandbox_mode", "nickname_candidates", "mcp_servers",
+        "sandbox_mode", "skills", "mcp_servers", "nickname_candidates",
     ]
     for key in preferred:
         if key in resolved:
@@ -636,10 +650,11 @@ def build_agents(source_dir: Path, harnesses: list[str], dry_run: bool = False, 
     """
     stats = {h: 0 for h in harnesses}
     source_files = sorted(f for f in source_dir.glob("*.md") if f.is_file())
+    output_root = build_output_root(source_dir)
 
     for harness in harnesses:
-        output_dir = source_dir / harness
-        suffix = ".toml" if harness == "codex" else ".md"
+        output_dir = output_root / harness
+        suffix = output_extension(harness, "agents", ".toml" if harness == "codex" else ".md")
         if not dry_run:
             output_dir.mkdir(parents=True, exist_ok=True)
             for existing in list(output_dir.glob("*.md")) + list(output_dir.glob("*.toml")):
@@ -653,7 +668,7 @@ def build_agents(source_dir: Path, harnesses: list[str], dry_run: bool = False, 
             if harness == "codex":
                 result = build_codex_agent_toml(fields, body, defaults=defaults, source_name=str(source_file))
             else:
-                result = build_md_file(fields, body, harness, schema, defaults=defaults)
+                result = build_md_file(fields, body, harness, schema, defaults=defaults, content_type="agents")
             if result is None:
                 continue
 
@@ -681,9 +696,10 @@ def build_skills(source_dir: Path, harnesses: list[str], dry_run: bool = False, 
         d for d in source_dir.iterdir()
         if d.is_dir() and d.name not in HARNESS_SET and not d.name.startswith(".")
     )
+    output_root = build_output_root(source_dir)
 
     for harness in harnesses:
-        harness_dir = source_dir / harness
+        harness_dir = output_root / harness
         if not dry_run:
             harness_dir.mkdir(parents=True, exist_ok=True)
             # Clean existing built skills
@@ -716,7 +732,7 @@ def build_skills(source_dir: Path, harnesses: list[str], dry_run: bool = False, 
                     content = item.read_text(encoding="utf-8")
                     fields, body = parse_frontmatter(content)
                     if fields:
-                        result = build_md_file(fields, body, harness, schema, defaults=defaults)
+                        result = build_md_file(fields, body, harness, schema, defaults=defaults, content_type="skills")
                         if result:
                             atomic_write(dest, result)
                         else:
@@ -737,12 +753,14 @@ def build_rules(source_dir: Path, harnesses: list[str], dry_run: bool = False, d
     """Build harness-specific rule files."""
     stats = {h: 0 for h in harnesses}
     source_files = sorted(f for f in source_dir.glob("*.md") if f.is_file())
+    output_root = build_output_root(source_dir)
 
     for harness in harnesses:
-        output_dir = source_dir / harness
+        output_dir = output_root / harness
+        extension = output_extension(harness, "rules", ".md")
         if not dry_run:
             output_dir.mkdir(parents=True, exist_ok=True)
-            for existing in output_dir.glob("*.md"):
+            for existing in output_dir.glob(f"*{extension}"):
                 existing.unlink()
 
         schema = RULE_SCHEMAS.get(harness)
@@ -751,16 +769,17 @@ def build_rules(source_dir: Path, harnesses: list[str], dry_run: bool = False, d
             fields, body = parse_frontmatter(content)
 
             if fields:
-                result = build_md_file(fields, body, harness, schema, defaults=defaults)
+                result = build_md_file(fields, body, harness, schema, defaults=defaults, content_type="rules")
                 if result is None:
                     continue
             else:
                 # No frontmatter = passthrough
                 result = content
 
-            output_path = output_dir / source_file.name
+            output_name = source_file.stem + extension
+            output_path = output_dir / output_name
             if dry_run:
-                print(f"  [dry-run] {harness}/rules/{source_file.name}")
+                print(f"  [dry-run] {harness}/rules/{output_name}")
             else:
                 atomic_write(output_path, result)
             stats[harness] += 1
@@ -772,12 +791,14 @@ def build_workflows(source_dir: Path, harnesses: list[str], dry_run: bool = Fals
     """Build harness-specific workflow files."""
     stats = {h: 0 for h in harnesses}
     source_files = sorted(f for f in source_dir.glob("*.md") if f.is_file())
+    output_root = build_output_root(source_dir)
 
     for harness in harnesses:
-        output_dir = source_dir / harness
+        output_dir = output_root / harness
+        extension = output_extension(harness, "workflows", ".md")
         if not dry_run:
             output_dir.mkdir(parents=True, exist_ok=True)
-            for existing in output_dir.glob("*.md"):
+            for existing in output_dir.glob(f"*{extension}"):
                 existing.unlink()
 
         schema = WORKFLOW_SCHEMAS.get(harness)
@@ -786,15 +807,16 @@ def build_workflows(source_dir: Path, harnesses: list[str], dry_run: bool = Fals
             fields, body = parse_frontmatter(content)
 
             if fields:
-                result = build_md_file(fields, body, harness, schema, defaults=defaults)
+                result = build_md_file(fields, body, harness, schema, defaults=defaults, content_type="workflows")
                 if result is None:
                     continue
             else:
                 result = content
 
-            output_path = output_dir / source_file.name
+            output_name = source_file.stem + extension
+            output_path = output_dir / output_name
             if dry_run:
-                print(f"  [dry-run] {harness}/workflows/{source_file.name}")
+                print(f"  [dry-run] {harness}/workflows/{output_name}")
             else:
                 atomic_write(output_path, result)
             stats[harness] += 1
@@ -980,11 +1002,12 @@ def build_mcp(source_dir: Path, harnesses: list[str], dry_run: bool = False, def
     stats = {h: 0 for h in harnesses}
     source_files = sorted(
         f for f in source_dir.iterdir()
-        if f.is_file() and f.suffix in (".json", ".md") and f.name not in HARNESS_SET
+        if f.is_file() and f.suffix in MCP_SOURCE_EXTENSIONS and f.name not in HARNESS_SET
     )
+    output_root = build_output_root(source_dir)
 
     for harness in harnesses:
-        output_dir = source_dir / harness
+        output_dir = output_root / harness
         if not dry_run:
             output_dir.mkdir(parents=True, exist_ok=True)
             for existing in output_dir.glob("*"):
@@ -995,7 +1018,7 @@ def build_mcp(source_dir: Path, harnesses: list[str], dry_run: bool = False, def
             content = source_file.read_text(encoding="utf-8")
             server_name = source_file.stem
             # Codex emits TOML snippets; everyone else emits JSON.
-            out_ext = ".toml" if harness == "codex" else ".json"
+            out_ext = output_extension(harness, "mcp", ".toml" if harness == "codex" else ".json")
             out_name = server_name + out_ext
 
             if source_file.suffix == ".md" or content.startswith("---"):
@@ -1014,6 +1037,22 @@ def build_mcp(source_dir: Path, harnesses: list[str], dry_run: bool = False, def
                 else:
                     # No frontmatter in .md — skip
                     continue
+            elif source_file.suffix in {".yaml", ".yml"}:
+                try:
+                    fields = yaml.safe_load(content) or {}
+                except yaml.YAMLError:
+                    continue
+                if not isinstance(fields, dict):
+                    continue
+                entry = build_mcp_entry(fields, harness)
+                if entry is None:
+                    continue
+                name_override = resolve_field(fields, harness, "name")
+                final_name = str(name_override) if name_override else server_name
+                if harness == "codex":
+                    result = build_codex_mcp_toml(final_name, entry)
+                else:
+                    result = json.dumps(entry, indent=2)
             elif source_file.suffix == ".json":
                 if harness == "codex":
                     # Codex doesn't accept raw JSON — try to convert.
@@ -1050,9 +1089,10 @@ def build_hooks(source_dir: Path, harnesses: list[str], dry_run: bool = False, d
         f for f in source_dir.iterdir()
         if f.is_file() and not f.name.startswith(".") and f.name not in HARNESS_SET
     )
+    output_root = build_output_root(source_dir)
 
     for harness in harnesses:
-        output_dir = source_dir / harness
+        output_dir = output_root / harness
         if not dry_run:
             output_dir.mkdir(parents=True, exist_ok=True)
             for existing in output_dir.glob("*"):
@@ -1135,7 +1175,7 @@ def has_sources(content_type: str, source_dir: Path) -> bool:
 def build_all(harnesses, dry_run=False, quiet=False):
     all_stats = {}
     for content_type in ["agents", "skills", "rules", "workflows", "mcp", "hooks"]:
-        source_dir = CONTENT_ROOT / content_type
+        source_dir = content_source_dir(content_type)
         if not has_sources(content_type, source_dir):
             continue
         defaults_path = source_dir.parent / "defaults.conf"
@@ -1160,7 +1200,7 @@ def main(argv=None):
     parser.add_argument(
         "--harness",
         default=",".join(ALL_HARNESSES),
-        help=f"Comma-separated harnesses (default: all). Options: {','.join(ALL_HARNESSES)}"
+        help=f"Comma-separated harnesses (default: enabled). Options: {','.join(CONFIGURED_HARNESSES)}"
     )
     parser.add_argument("--dry-run", action="store_true", help="Preview without writing")
     parser.add_argument("--quiet", "-q", action="store_true", help="Suppress output")
@@ -1176,8 +1216,8 @@ def main(argv=None):
 
     harnesses = [h.strip() for h in args.harness.split(",")]
     for h in harnesses:
-        if h not in ALL_HARNESSES:
-            print(f"Error: unknown harness '{h}'. Options: {', '.join(ALL_HARNESSES)}", file=sys.stderr)
+        if h not in CONFIGURED_HARNESSES:
+            print(f"Error: unknown harness '{h}'. Options: {', '.join(CONFIGURED_HARNESSES)}", file=sys.stderr)
             return 1
 
     builder = BUILDERS[args.type]

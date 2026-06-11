@@ -1,0 +1,57 @@
+{
+  "name": "pi",
+  "label": "Pi",
+  "builtin": true,
+  "default_enabled": false,
+  "auto_enable": true,
+  "detect": {
+    "commands": ["pi"],
+    "paths": ["~/.pi"]
+  },
+  "renderers": {
+    "agents": "markdown",
+    "mcp": "json"
+  },
+  "schemas": {
+    "agents": ["name", "description", "model", "tools", "mcp_servers"],
+    "skills": ["name", "description"],
+    "rules": ["name", "description"],
+    "workflows": ["name", "description"]
+  },
+  "field_mappings": {
+    "agents": {
+      "mcp_servers": "mcp_servers"
+    }
+  },
+  "models": {
+    "agents": ["default", "gpt-5", "claude-sonnet-4.6"]
+  },
+  "outputs": {
+    "agents": {"extension": ".md"},
+    "skills": {"directory": true},
+    "rules": {"extension": ".md"},
+    "workflows": {"extension": ".md"},
+    "hooks": {"directory": false},
+    "mcp": {"extension": ".json"}
+  },
+  "sync": {
+    "paths": {
+      "project": {
+        "agents": ".pi/agents/{name}.md",
+        "skills": ".pi/skills/{name}/",
+        "rules": ".pi/rules/{name}.md",
+        "workflows": ".pi/workflows/{name}.md",
+        "hooks": ".pi/hooks/{name}",
+        "mcp": ".pi/mcp.json"
+      },
+      "global": {
+        "agents": ".pi/agents/{name}.md",
+        "skills": ".pi/skills/{name}/",
+        "rules": ".pi/rules/{name}.md",
+        "workflows": ".pi/workflows/{name}.md",
+        "hooks": ".pi/hooks/{name}",
+        "mcp": ".pi/mcp.json"
+      }
+    }
+  }
+}

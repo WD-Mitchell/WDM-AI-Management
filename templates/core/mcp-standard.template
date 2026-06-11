@@ -1,0 +1,10 @@
+name: mcp-standard
+type: mcp
+description: Default MCP server documentation sections.
+sections:
+- title: Usage Notes
+  level: 2
+- title: Configuration
+  level: 2
+- title: Environment
+  level: 2

@@ -1,0 +1,18 @@
+name: agent-standard
+type: agents
+description: Default agent instruction sections.
+sections:
+- title: Communication Protocol
+  level: 2
+- title: Core Mission
+  level: 2
+- title: Responsibilities
+  level: 2
+- title: Execution Flow
+  level: 2
+- title: Output Format
+  level: 2
+- title: Failure Handling
+  level: 2
+- title: Success Metrics
+  level: 2

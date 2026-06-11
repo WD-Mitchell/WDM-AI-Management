@@ -1,0 +1,61 @@
+{
+  "name": "cursor",
+  "label": "Cursor",
+  "builtin": true,
+  "default_enabled": false,
+  "auto_enable": true,
+  "detect": {
+    "commands": ["cursor"],
+    "paths": ["~/.cursor"]
+  },
+  "renderers": {
+    "agents": "markdown",
+    "mcp": "json"
+  },
+  "schemas": {
+    "agents": ["name", "description", "model", "readonly", "is_background"],
+    "skills": ["name", "description", "paths", "disable-model-invocation", "metadata"],
+    "rules": ["name", "description", "alwaysApply", "globs"],
+    "workflows": ["name", "description"]
+  },
+  "field_mappings": {
+    "agents": {
+      "read_only": "readonly",
+      "background": "is_background"
+    },
+    "skills": {
+      "disable_model_invocation": "disable-model-invocation"
+    },
+    "rules": {
+      "always_apply": "alwaysApply"
+    }
+  },
+  "models": {
+    "agents": ["default", "gpt-5", "claude-sonnet-4.6", "gemini-3.1-pro"]
+  },
+  "outputs": {
+    "agents": {"extension": ".md"},
+    "skills": {"directory": true},
+    "rules": {"extension": ".mdc"},
+    "workflows": {"extension": ".md"},
+    "mcp": {"extension": ".json", "merge": "mcp.json"}
+  },
+  "sync": {
+    "paths": {
+      "project": {
+        "agents": ".cursor/agents/{name}.md",
+        "skills": ".agents/skills/{name}/",
+        "rules": ".cursor/rules/{name}.mdc",
+        "workflows": ".cursor/workflows/{name}.md",
+        "mcp": ".cursor/mcp.json"
+      },
+      "global": {
+        "agents": ".cursor/agents/{name}.md",
+        "skills": ".agents/skills/{name}/",
+        "rules": ".cursor/rules/{name}.mdc",
+        "workflows": ".cursor/workflows/{name}.md",
+        "mcp": ".cursor/mcp.json"
+      }
+    }
+  }
+}
