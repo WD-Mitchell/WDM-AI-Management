@@ -111,10 +111,21 @@ jobs:
             exit 1
           fi
 
+      - name: Create GitHub App token
+        if: steps.versions.outputs.should_release == 'true'
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.WDM_DEPLOY_APP_CLIENT_ID }}
+          private-key: ${{ secrets.WDM_DEPLOY_APP_PRIVATE_KEY }}
+          owner: WD-Mitchell
+          repositories: WDM-AI-Management
+          permission-contents: write
+
       - name: Create GitHub release
         if: steps.versions.outputs.should_release == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           TAG: ${{ steps.versions.outputs.tag }}
           VERSION: ${{ steps.versions.outputs.package_version }}
         run: |
