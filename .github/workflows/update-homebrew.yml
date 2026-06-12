@@ -39,7 +39,7 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Checkout source release
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ steps.release.outputs.tag }}
           persist-credentials: false
@@ -87,7 +87,7 @@ jobs:
           permission-contents: write
 
       - name: Checkout Homebrew tap
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: ${{ env.TAP_REPOSITORY }}
           token: ${{ steps.app-token.outputs.token }}
