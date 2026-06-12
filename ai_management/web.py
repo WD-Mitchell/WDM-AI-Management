@@ -1253,7 +1253,10 @@ def normalize_fields(form: dict[str, Any], original_fields: dict[str, Any] | Non
         elif field_name in LIST_FIELD_NAMES or field_name.endswith(("_mcp_servers", "_mcp-servers")):
             fields[field_name] = field_list_value(value)
         elif field_name in MAPPING_FIELD_NAMES or value.startswith(("[", "{")) or "\n" in value:
-            fields[field_name] = yaml.safe_load(value)
+            try:
+                fields[field_name] = yaml.safe_load(value)
+            except yaml.YAMLError as exc:
+                raise ValueError(f"{field_name} must be valid YAML: {exc}") from exc
         else:
             fields[field_name] = value
     extra = form.get("extra_fields", "").strip()
@@ -1691,6 +1694,7 @@ def save_item(form: dict[str, str]) -> str:
     if content_type == "mcp" and form.get("mcp_format") == "json":
         path = content_source_dir("mcp") / f"{name}.json"
         json.loads(form.get("raw", "{}") or "{}")
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(form.get("raw", "").rstrip() + "\n", encoding="utf-8")
         maybe_remove_renamed(content_type, original_name, name)
         return name
@@ -2716,7 +2720,15 @@ class ManagementHandler(BaseHTTPRequestHandler):
                 )
                 self.redirect(target)
             elif path == "/install":
-                update_installed(form.get("type", ""), form.get("name", ""), form.get("action", "install"))
+                if form.get("harness_update") == "1" or "targets" in parsed or form.get("scope", "global") != "global":
+                    update_harness_installation(
+                        form.get("type", ""),
+                        form.get("name", ""),
+                        form.get("scope", "global"),
+                        parsed.get("targets", []),
+                    )
+                else:
+                    update_installed(form.get("type", ""), form.get("name", ""), form.get("action", "install"))
                 return_to = form.get("return_to", "")
                 if return_to.startswith("/?"):
                     target = return_to
@@ -2878,6 +2890,120 @@ def update_installed(content_type: str, name: str, action: str) -> None:
     elif name not in items:
         items.append(name)
     save_installed_type(content_type, items)
+
+
+def normalize_harness_targets(values: list[str]) -> list[str]:
+    targets: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        harness = str(value or "").strip()
+        if harness in ALL_HARNESSES and harness not in seen:
+            targets.append(harness)
+            seen.add(harness)
+    return targets
+
+
+def save_project_installed_type(project_root: str, content_type: str, items: list[str]) -> None:
+    path = Path(project_root).expanduser() / ".wdm" / "installed" / f"{content_type}.conf"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(sorted(dict.fromkeys(items))) + ("\n" if items else ""), encoding="utf-8")
+
+
+def set_scope_installed(content_type: str, name: str, scope: str, installed: bool) -> None:
+    project = selected_project(scope)
+    if project["kind"] == "project":
+        items: set[str] = set()
+        for path in project_installed_paths(project["root"], content_type):
+            items.update(parse_installed_conf(path))
+        if installed:
+            items.add(name)
+        else:
+            items.discard(name)
+        save_project_installed_type(project["root"], content_type, sorted(items))
+        return
+    items = load_installed_type(content_type)
+    if installed and name not in items:
+        items.append(name)
+    elif not installed:
+        items = [item for item in items if item != name]
+    save_installed_type(content_type, items)
+
+
+def build_harness_outputs(content_type: str, harnesses: list[str]) -> None:
+    if not harnesses:
+        return
+    builder = build_module.BUILDERS.get(content_type)
+    if builder is None:
+        raise ValueError(f"{content_type} cannot be built for harnesses.")
+    source_dir = content_source_dir(content_type)
+    defaults = load_defaults(DEFAULTS_FILE) if DEFAULTS_FILE.exists() else {}
+    builder(source_dir, harnesses, dry_run=False, defaults=defaults)
+
+
+def built_artifact_path(content_type: str, name: str, harness: str) -> Path:
+    source_path = resolve_item_path(content_type, name)
+    build_root = build_module.build_output_root(content_source_dir(content_type))
+    build_dir = build_root / harness
+    if content_type == "skills":
+        return build_dir / name
+    if content_type == "agents":
+        default = ".toml" if harness == "codex" else ".md"
+        return build_dir / f"{name}{build_module.output_extension(harness, content_type, default)}"
+    if content_type in {"rules", "workflows"}:
+        return build_dir / f"{name}{build_module.output_extension(harness, content_type, '.md')}"
+    if content_type == "mcp":
+        default = ".toml" if harness == "codex" else ".json"
+        return build_dir / f"{name}{build_module.output_extension(harness, content_type, default)}"
+    if content_type == "hooks":
+        return build_dir / source_path.name
+    return build_dir / source_path.name
+
+
+def remove_direct_harness_destination(path: Path) -> None:
+    if path.is_symlink():
+        path.unlink()
+
+
+def update_harness_installation(content_type: str, name: str, scope: str, target_values: list[str]) -> None:
+    if content_type not in CONTENT_TYPES:
+        raise ValueError(f"{content_type} cannot be installed.")
+    if name not in list_names(content_type):
+        raise ValueError(f"Unknown {content_type} item: {name}")
+    scope = selected_project(scope).get("value", "global")
+    selected_targets = set(normalize_harness_targets(target_values))
+
+    supported_targets: list[str] = []
+    aggregate_targets: list[str] = []
+    destinations: dict[str, Path] = {}
+    for harness in ALL_HARNESSES:
+        destination, aggregate = harness_destination(content_type, name, harness, scope)
+        if destination is None:
+            continue
+        if aggregate:
+            aggregate_targets.append(harness)
+            continue
+        supported_targets.append(harness)
+        destinations[harness] = destination
+
+    selected_supported = [harness for harness in supported_targets if harness in selected_targets]
+    build_harness_outputs(content_type, selected_supported)
+
+    for harness in supported_targets:
+        destination = destinations[harness]
+        if harness in selected_targets:
+            built = built_artifact_path(content_type, name, harness)
+            if not built.exists():
+                raise ValueError(f"Built {content_type} output is missing for {harness}: {built}")
+            sync_module.make_link(built, destination)
+        else:
+            remove_direct_harness_destination(destination)
+
+    selected_aggregate = sorted(set(aggregate_targets) & selected_targets)
+    if selected_aggregate:
+        labels = ", ".join(harness_label(harness) for harness in selected_aggregate)
+        raise ValueError(f"{content_type} uses aggregate config for {labels}; use Sync for those targets.")
+
+    set_scope_installed(content_type, name, scope, bool(selected_supported))
 
 
 def render_index(
@@ -6716,6 +6842,7 @@ def render_selection_card(
   <input type="hidden" name="type" value="{escape(content_type)}">
   <input type="hidden" name="name" value="{escape(name)}">
   <input type="hidden" name="action" value="install">
+  <input type="hidden" name="harness_update" value="1">
   <input type="hidden" name="scope" value="{escape(scope)}" data-scope-hidden>
   <input type="hidden" name="return_to" value="{escape(return_to)}">
   {render_harness_multiselect(harness_statuses)}
@@ -8273,7 +8400,7 @@ def render_hook_editor(name: str, raw: str, path: Path, scope: str, installed: b
 </section>"""
 
 
-def pretty_json(value: Any) -> str:
+def pretty_json_value(value: Any) -> str:
     if not value:
         return "{}"
     return json.dumps(value, indent=2, ensure_ascii=True)
@@ -8282,7 +8409,7 @@ def pretty_json(value: Any) -> str:
 def harness_json_textarea(name: str, label: str, value: Any, rows: int = 7) -> str:
     return f"""<label class="wide harness-json-field">
   <span>{escape(label)}</span>
-  <textarea name="{escape(name)}" rows="{rows}" spellcheck="false">{escape_textarea(pretty_json(value))}</textarea>
+  <textarea name="{escape(name)}" rows="{rows}" spellcheck="false">{escape_textarea(pretty_json_value(value))}</textarea>
 </label>"""
 
 

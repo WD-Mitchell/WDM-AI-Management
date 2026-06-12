@@ -1,0 +1,61 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python ${{ matrix.python-version }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.12", "3.13", "3.14"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install Python dependencies
+        run: python3 -m pip install -r requirements.txt
+
+      - name: Byte-compile Python modules and tests
+        run: python3 -m py_compile ai_management/*.py tests/*.py
+
+      - name: Run tests
+        run: python3 -m unittest discover -s tests
+
+      - name: Validate workflow YAML
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          for path in sorted(Path(".github/workflows").glob("*.yml")):
+              with path.open("r", encoding="utf-8") as handle:
+                  yaml.safe_load(handle)
+              print(f"ok {path}")
+          PY
+
+      - name: Validate package
+        run: npm pack --dry-run

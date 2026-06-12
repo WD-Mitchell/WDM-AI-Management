@@ -12,6 +12,9 @@ def package_root() -> Path:
 
 def main() -> int:
     root = package_root()
+    venv_python = root / ".venv" / "bin" / "python"
+    if venv_python.exists() and Path(sys.executable).resolve() != venv_python.resolve():
+        os.execv(str(venv_python), [str(venv_python), str(Path(__file__).resolve()), *sys.argv[1:]])
     os.environ.setdefault("AI_MANAGEMENT_HOME", str(Path.home() / ".wdm"))
     sys.path.insert(0, str(root))
     from ai_management.cli import main as cli_main

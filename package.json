@@ -1,6 +1,6 @@
 {
   "name": "@wdm-uk/ai-management",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Manage AI agents, skills, MCP servers, rules, workflows, hooks, harnesses, and templates from one local source of truth.",
   "repository": {
     "type": "git",
@@ -15,10 +15,12 @@
     "defaults.conf",
     "flags.md",
     "harnesses",
+    "requirements.txt",
     "skills/core/AI-Management",
     "templates/core",
     "README.md",
     "CONTRIBUTING.md",
+    "SECURITY.md",
     "!**/__pycache__",
     "!**/*.pyc"
   ],
@@ -26,7 +28,8 @@
     "ai": "wdm-ai",
     "web": "wdm-ai --no-open",
     "sync": "wdm-ai sync",
-    "postinstall": "./bin/wdm-ai bootstrap --quiet"
+    "test": "python3 -m unittest discover -s tests",
+    "postinstall": "python3 -m venv .venv && ./.venv/bin/python -m pip install -r requirements.txt && ./.venv/bin/python ./bin/wdm-ai bootstrap --quiet"
   },
   "engines": {
     "node": ">=18"
