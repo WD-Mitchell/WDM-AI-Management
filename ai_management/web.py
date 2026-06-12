@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import html
 import importlib
 import io
@@ -51,6 +52,7 @@ from .utils import (
     CONTENT_TYPES,
     DEFAULTS_FILE,
     HARNESS_DEFINITIONS,
+    REPO_ROOT,
     TEMPLATES_DIR,
     content_source_dir,
     harness_detected,
@@ -120,6 +122,8 @@ DEFAULT_SELECTION_ITEMS_PER_PAGE = 20
 DEFAULT_SELECTION_SORT = "installed-desc"
 MIN_SELECTION_ITEMS_PER_PAGE = 1
 MAX_SELECTION_ITEMS_PER_PAGE = 100
+UPDATE_STATUS_CACHE: dict[str, Any] = {"checked_at": 0.0, "info": None}
+UPDATE_STATUS_TTL = 300.0
 HARNESS_NONE_VALUE = "__none__"
 LIST_FIELD_NAMES = {
     "tools",
@@ -2182,21 +2186,149 @@ def app_managed_target(path: Path) -> bool:
         return False
 
 
+def external_source_hash(raw: str) -> str:
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def external_import_metadata(content_type: str, name: str) -> dict[str, Any] | None:
+    if content_type not in CONTENT_TYPES:
+        return None
+    try:
+        path, raw, fields, _ = read_item(content_type, name)
+    except OSError:
+        return None
+    if not path.exists():
+        return None
+    return {"name": name, "path": path, "raw": raw, "fields": fields}
+
+
+def managed_external_match(content_type: str, harness: str, path: Path, external_name: str, raw: str) -> dict[str, Any]:
+    raw_hash = external_source_hash(raw)
+    resolved = ""
+    try:
+        resolved = str(path.resolve())
+    except OSError:
+        resolved = str(path)
+    matches: list[dict[str, Any]] = []
+    direct = external_import_metadata(content_type, external_name)
+    if direct:
+        matches.append(direct)
+    for managed_name in list_names(content_type):
+        if managed_name == external_name:
+            continue
+        candidate = external_import_metadata(content_type, managed_name)
+        if not candidate:
+            continue
+        fields = candidate.get("fields", {})
+        imported_from = str(fields.get("imported_from") or "")
+        imported_harness = str(fields.get("imported_harness") or "")
+        if imported_from and imported_harness == harness:
+            try:
+                if str(Path(imported_from).expanduser().resolve()) == resolved:
+                    matches.append(candidate)
+                    continue
+            except OSError:
+                if imported_from == str(path):
+                    matches.append(candidate)
+    if not matches:
+        return {"managed": False, "managed_name": "", "managed_path": "", "sync_status": "external", "sync_label": "External"}
+    match = matches[0]
+    fields = match.get("fields", {})
+    stored_hash = str(fields.get("imported_source_sha256") or "")
+    if stored_hash:
+        status = "up-to-date" if stored_hash == raw_hash else "out-of-date"
+        label = "Up to date" if status == "up-to-date" else "Out of date"
+    elif match.get("raw") == raw:
+        status = "up-to-date"
+        label = "Up to date"
+    else:
+        status = "unknown"
+        label = "Unknown"
+    return {
+        "managed": True,
+        "managed_name": str(match.get("name") or ""),
+        "managed_path": str(match.get("path") or ""),
+        "sync_status": status,
+        "sync_label": label,
+    }
+
+
+def recursive_external_paths(directory: Path, pattern: str) -> list[Path]:
+    try:
+        paths = list(directory.rglob(pattern))
+    except OSError:
+        return []
+    return sorted(paths, key=lambda item: str(item).casefold())
+
+
+def harness_sync_template_for_type(harness: str, content_type: str, global_mode: bool) -> str:
+    definition = HARNESS_DEFINITIONS.get(harness, {})
+    sync = definition.get("sync", {}) if isinstance(definition, dict) else {}
+    paths = sync.get("paths", {}) if isinstance(sync, dict) else {}
+    if not isinstance(paths, dict):
+        return ""
+    mode_key = "global" if global_mode else "project"
+    mode_paths = paths.get(mode_key)
+    if isinstance(mode_paths, dict):
+        return str(mode_paths.get(content_type) or "")
+    value = paths.get(content_type)
+    return str(value) if isinstance(value, str) else ""
+
+
+def external_scan_spec_from_template(root: Path, template: str) -> tuple[Path, str] | None:
+    if not template or "{" not in template:
+        return None
+    template_path = Path(template)
+    parts = template_path.parts
+    if not parts:
+        return None
+    file_part = parts[-1]
+    if "{" not in file_part:
+        return None
+    directory_parts = parts[:-1]
+    if any("{" in part or "}" in part for part in directory_parts):
+        return None
+    pattern = re.sub(r"\{[^}]+\}", "*", file_part)
+    directory = template_path.parent if template_path.is_absolute() else root.joinpath(*directory_parts)
+    return directory, pattern
+
+
+def external_agent_scan_specs(root: Path, global_mode: bool) -> list[tuple[str, Path, str]]:
+    specs: list[tuple[str, Path, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    def add(harness: str, directory: Path, pattern: str) -> None:
+        if harness not in ALL_HARNESSES:
+            return
+        key = (harness, str(directory), pattern)
+        if key in seen:
+            return
+        seen.add(key)
+        specs.append((harness, directory, pattern))
+
+    for harness in ALL_HARNESSES:
+        spec = external_scan_spec_from_template(root, harness_sync_template_for_type(harness, "agents", global_mode))
+        if spec:
+            add(harness, spec[0], spec[1])
+
+    # Fallbacks cover the built-in harnesses before ~/.wdm has copied harness configs.
+    add("codex", root / ".codex" / "agents", "*.toml")
+    add("claude", root / ".claude" / "agents", "*.md")
+    add("gemini", root / ".gemini" / "agents", "*.md")
+    add("copilot", (root / ".copilot" if global_mode else root / ".github") / "agents", "*.agent.md")
+    return specs
+
+
 def external_item_candidates(content_type: str, scope: str) -> list[dict[str, Any]]:
     if content_type != "agents":
         return []
     root = scoped_target_root(scope)
     global_mode = is_global_scope(scope)
-    specs = [
-        ("codex", root / ".codex" / "agents", "*.toml"),
-        ("claude", root / ".claude" / "agents", "*.md"),
-        ("gemini", root / ".gemini" / "agents", "*.md"),
-        ("copilot", (root / ".copilot" if global_mode else root / ".github") / "agents", "*.agent.md"),
-    ]
+    specs = external_agent_scan_specs(root, global_mode)
     items: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
     for harness, directory, pattern in specs:
-        for path in sorted(directory.glob(pattern)):
+        for path in recursive_external_paths(directory, pattern):
             if not path.is_file() and not path.is_symlink():
                 continue
             if app_managed_target(path):
@@ -2221,6 +2353,7 @@ def external_item_candidates(content_type: str, scope: str) -> list[dict[str, An
                 modified_ts = 0.0
             definition = HARNESS_DEFINITIONS.get(harness, {})
             label = str(definition.get("label") or harness).strip()
+            managed = managed_external_match(content_type, harness, path, name, raw)
             items.append(
                 {
                     "name": name,
@@ -2228,7 +2361,11 @@ def external_item_candidates(content_type: str, scope: str) -> list[dict[str, An
                     "harness_label": label,
                     "path": str(path),
                     "description": external_description(raw, harness),
-                    "source_exists": content_path(content_type, name).exists(),
+                    "source_exists": bool(managed.get("managed")),
+                    "managed_name": str(managed.get("managed_name") or ""),
+                    "managed_path": str(managed.get("managed_path") or ""),
+                    "sync_status": str(managed.get("sync_status") or "external"),
+                    "sync_label": str(managed.get("sync_label") or "External"),
                     "created_at": format_file_date(created_ts) if created_ts else "",
                     "modified_at": format_file_date(modified_ts) if modified_ts else "",
                     "created_ts": str(created_ts),
@@ -2307,6 +2444,29 @@ def save_external_item(form: dict[str, str]) -> None:
     path.write_text(form.get("raw", "").rstrip() + "\n", encoding="utf-8")
 
 
+def managed_external_content(content_type: str, name: str, harness: str, source_path: Path, raw: str) -> str:
+    source_hash = external_source_hash(raw)
+    imported_fields = {
+        "imported_from": str(source_path),
+        "imported_harness": harness,
+        "imported_source_sha256": source_hash,
+    }
+    if source_path.suffix == ".md" and has_frontmatter(raw):
+        fields, body = parse_frontmatter(raw)
+        fields.update(imported_fields)
+        fields.setdefault("name", name)
+        return serialize_markdown(fields, body)
+    description = external_description(raw, harness) or f"Imported {harness} agent."
+    fields = {
+        "name": name,
+        "description": description,
+        **imported_fields,
+    }
+    language = "toml" if source_path.suffix == ".toml" else "markdown"
+    body = f"Imported from `{source_path}`.\n\n```{language}\n{raw.rstrip()}\n```"
+    return serialize_markdown(fields, body)
+
+
 def import_external_item(form: dict[str, str]) -> str:
     content_type = form.get("type", "agents").strip()
     if content_type != "agents":
@@ -2329,24 +2489,31 @@ def import_external_item(form: dict[str, str]) -> str:
         raise ValueError(f"{name} is already managed by this app.")
     raw = source_path.read_text(encoding="utf-8")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    if source_path.suffix == ".md" and has_frontmatter(raw):
-        managed = raw.rstrip() + "\n"
-    else:
-        description = external_description(raw, harness) or f"Imported {harness} agent."
-        fields = {
-            "name": name,
-            "description": description,
-            "imported_from": str(source_path),
-            "imported_harness": harness,
-        }
-        language = "toml" if source_path.suffix == ".toml" else "markdown"
-        body = f"Imported from `{source_path}`.\n\n```{language}\n{raw.rstrip()}\n```"
-        managed = serialize_markdown(fields, body)
-    destination.write_text(managed, encoding="utf-8")
+    destination.write_text(managed_external_content(content_type, name, harness, source_path, raw), encoding="utf-8")
     installed = load_installed_type(content_type)
     if name not in installed:
         save_installed_type(content_type, installed + [name])
     return name
+
+
+def sync_external_item(form: dict[str, str]) -> str:
+    content_type = form.get("type", "agents").strip()
+    item = external_item_from_path(
+        content_type,
+        form.get("harness", ""),
+        form.get("path", ""),
+        form.get("scope", "global"),
+    )
+    managed_name = form.get("managed_name", "").strip() or str(item.get("managed_name") or "")
+    if not managed_name:
+        raise ValueError("External item is not managed by this app.")
+    destination = content_source_dir(content_type) / f"{managed_name}.md"
+    if not destination.exists():
+        raise ValueError(f"{managed_name} is not managed by this app.")
+    source_path = Path(str(item["path"]))
+    raw = source_path.read_text(encoding="utf-8")
+    destination.write_text(managed_external_content(content_type, managed_name, str(item.get("harness") or ""), source_path, raw), encoding="utf-8")
+    return managed_name
 
 
 def preview_item(content_type: str, name: str) -> str:
@@ -2933,6 +3100,21 @@ class ManagementHandler(BaseHTTPRequestHandler):
                         f"/?type={urllib.parse.quote(form.get('type', 'agents'))}"
                         f"&scope={urllib.parse.quote(form.get('scope', 'global'))}"
                         f"&external=1"
+                    )
+                if "name=" not in target:
+                    separator = "&" if "?" in target else "?"
+                    target = f"{target}{separator}name={urllib.parse.quote(name)}"
+                self.redirect(target)
+            elif path == "/sync-external":
+                name = sync_external_item(form)
+                return_to = form.get("return_to", "")
+                if return_to.startswith("/?"):
+                    target = return_to
+                else:
+                    target = (
+                        f"/?type={urllib.parse.quote(form.get('type', 'agents'))}"
+                        f"&scope={urllib.parse.quote(form.get('scope', 'global'))}"
+                        f"&source=combined"
                     )
                 if "name=" not in target:
                     separator = "&" if "?" in target else "?"
@@ -6221,11 +6403,122 @@ def render_type_submenu(active: str, scope: str) -> str:
 
 
 def render_sync_controls(scope: str) -> str:
-    return f"""<form class="sync-form rail-sync-form" action="/sync" method="post" data-sync-form>
+    return f"""<div class="rail-bottom">
+  <form class="sync-form rail-sync-form" action="/sync" method="post" data-sync-form>
   <input type="hidden" name="scope" value="{escape(scope)}" data-scope-hidden>
   <button type="submit" class="secondary">Dry Run</button>
   <button type="submit" name="apply" value="1">Sync</button>
-</form>"""
+</form>
+  {render_update_status_panel()}
+</div>"""
+
+
+def version_tuple(version: str) -> tuple[int, ...]:
+    parts = []
+    for part in re.split(r"[^0-9]+", version):
+        if part:
+            parts.append(int(part))
+    return tuple(parts)
+
+
+def compare_versions(left: str, right: str) -> int:
+    left_parts = list(version_tuple(left))
+    right_parts = list(version_tuple(right))
+    width = max(len(left_parts), len(right_parts))
+    left_parts.extend([0] * (width - len(left_parts)))
+    right_parts.extend([0] * (width - len(right_parts)))
+    if left_parts < right_parts:
+        return -1
+    if left_parts > right_parts:
+        return 1
+    return 0
+
+
+def run_update_probe(args: list[str], timeout: float = 2.5) -> tuple[int, str]:
+    try:
+        completed = subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return 127, ""
+    return completed.returncode, (completed.stdout or "").strip()
+
+
+def npm_latest_version() -> str:
+    code, output = run_update_probe(["npm", "view", "@wdm-uk/ai-management", "version"], 3.0)
+    return output.splitlines()[-1].strip() if code == 0 and output.strip() else ""
+
+
+def brew_outdated() -> str:
+    code, output = run_update_probe(["brew", "outdated", "--formula", "wdm-ai-management", "--quiet"], 3.0)
+    if code != 0:
+        return "unknown"
+    return "out-of-date" if "wdm-ai-management" in output.splitlines() else "up-to-date"
+
+
+def detect_install_method(command_path: str | None = None) -> dict[str, str]:
+    command_path = command_path or shutil.which("wdm-ai") or ""
+    resolved = ""
+    try:
+        resolved = str(Path(command_path).resolve()) if command_path else ""
+    except OSError:
+        resolved = command_path
+    path_text = f"{command_path}\n{resolved}"
+    if "Cellar/wdm-ai-management" in path_text or "/homebrew/" in path_text.lower():
+        return {"method": "Homebrew", "command": "brew update && brew upgrade wdm-ai-management", "path": resolved or command_path}
+    if ".bun/" in path_text or "/bun/" in path_text:
+        return {"method": "Bun", "command": "bun add -g @wdm-uk/ai-management@latest", "path": resolved or command_path}
+    if "node_modules" in path_text or "/npm/" in path_text or ".npm" in path_text:
+        return {"method": "npm", "command": "npm update -g @wdm-uk/ai-management", "path": resolved or command_path}
+    if (REPO_ROOT / ".git").exists() and safe_relative_to(Path(__file__).resolve(), REPO_ROOT):
+        return {"method": "Source", "command": "git pull && npm install", "path": str(REPO_ROOT)}
+    return {"method": "Unknown", "command": "brew update && brew upgrade wdm-ai-management", "path": resolved or command_path}
+
+
+def update_status_info(force: bool = False) -> dict[str, str]:
+    now = time.monotonic()
+    cached = UPDATE_STATUS_CACHE.get("info")
+    if cached and not force and now - float(UPDATE_STATUS_CACHE.get("checked_at") or 0.0) < UPDATE_STATUS_TTL:
+        return dict(cached)
+    info = detect_install_method()
+    status = "unknown"
+    latest = ""
+    method = info["method"]
+    if method == "Homebrew" and shutil.which("brew"):
+        status = brew_outdated()
+    elif method in {"npm", "Bun"} and shutil.which("npm"):
+        latest = npm_latest_version()
+        if latest:
+            status = "out-of-date" if compare_versions(APP_VERSION, latest) < 0 else "up-to-date"
+    elif method == "Source":
+        status = "unknown"
+    info = {
+        **info,
+        "status": status,
+        "status_label": {"up-to-date": "Up to date", "out-of-date": "Out of date"}.get(status, "Unknown"),
+        "current": APP_VERSION,
+        "latest": latest,
+    }
+    UPDATE_STATUS_CACHE["checked_at"] = now
+    UPDATE_STATUS_CACHE["info"] = dict(info)
+    return info
+
+
+def render_update_status_panel() -> str:
+    info = update_status_info()
+    status = str(info.get("status") or "unknown")
+    latest = str(info.get("latest") or "")
+    latest_line = f'<span>Latest {escape(latest)}</span>' if latest else ""
+    return f"""<section class="rail-update-status" data-update-status="{escape(status)}">
+  <div class="rail-update-status-head">
+    <span class="rail-update-dot" aria-hidden="true"></span>
+    <strong>{escape(str(info.get("status_label") or "Unknown"))}</strong>
+  </div>
+  <div class="rail-update-meta">
+    <span>{escape(str(info.get("method") or "Unknown"))}</span>
+    <span>v{escape(str(info.get("current") or APP_VERSION))}</span>
+    {latest_line}
+  </div>
+  <code>{escape(str(info.get("command") or ""))}</code>
+</section>"""
 
 
 def render_project_nav(content_type: str, selected_name: str | None, scope: str) -> str:
@@ -7185,12 +7478,38 @@ def render_external_card(
     if extra:
         return_to += f"&{extra}"
     duplicate = bool(item.get("source_exists"))
-    button = (
-        '<button type="submit" class="secondary selection-card-action-update">Import</button>'
-        if not duplicate
-        else '<button type="button" class="secondary selection-card-action-update" disabled>Managed</button>'
-    )
-    duplicate_note = "Already managed" if duplicate else "External"
+    managed_name = str(item.get("managed_name") or "")
+    sync_status = str(item.get("sync_status") or "external")
+    sync_label = str(item.get("sync_label") or "External")
+    form_id = "external-sync-" + re.sub(r"[^a-zA-Z0-9_-]+", "-", f"{harness}-{name}-{current_page}").strip("-")
+    if not duplicate:
+        action_control = f"""<form class="selection-card-form external-import-form" action="/import-external" method="post">
+      <input type="hidden" name="type" value="{escape(content_type)}">
+      <input type="hidden" name="name" value="{escape(name)}">
+      <input type="hidden" name="harness" value="{escape(harness)}">
+      <input type="hidden" name="path" value="{escape(source_path)}">
+      <input type="hidden" name="scope" value="{escape(scope)}" data-scope-hidden>
+      <input type="hidden" name="return_to" value="{escape(return_to)}">
+      <button type="submit" class="secondary selection-card-action-update">Import</button>
+    </form>"""
+    else:
+        action_control = f"""<button type="button" class="secondary selection-card-action-update" data-selection-edit-button data-edit-type="{escape(content_type)}" data-edit-name="{escape(managed_name)}" data-edit-scope="{escape(scope)}" data-edit-view="form">Managed</button>"""
+        if sync_status == "out-of-date":
+            action_control += f"""<form id="{escape(form_id)}" class="selection-card-form external-sync-form" action="/sync-external" method="post">
+      <input type="hidden" name="type" value="{escape(content_type)}">
+      <input type="hidden" name="name" value="{escape(name)}">
+      <input type="hidden" name="managed_name" value="{escape(managed_name)}">
+      <input type="hidden" name="harness" value="{escape(harness)}">
+      <input type="hidden" name="path" value="{escape(source_path)}">
+      <input type="hidden" name="scope" value="{escape(scope)}" data-scope-hidden>
+      <input type="hidden" name="return_to" value="{escape(return_to)}">
+    </form>"""
+    managed_label = managed_name if duplicate and managed_name else "None"
+    if duplicate and sync_status == "out-of-date":
+        status_control = f'<button type="submit" class="external-sync-status stale" form="{escape(form_id)}">{escape(sync_label)}</button>'
+    else:
+        status_class = "ok" if sync_status == "up-to-date" else ("unknown" if sync_status == "unknown" else "")
+        status_control = f'<span class="external-sync-status {escape(status_class)}">{escape(sync_label)}</span>'
     preview_attrs = (
         f""" data-external-preview-card data-external-type="{escape(content_type)}" data-external-name="{escape(name)}" data-external-harness="{escape(harness)}" data-external-path="{escape(source_path)}" data-external-scope="{escape(scope)}" tabindex="0" aria-label="Preview external {escape(name)}" title="Preview external {escape(name)}" """
     )
@@ -7203,19 +7522,11 @@ def render_external_card(
     <small>{escape(description)}</small>
   </div>
   <div class="selection-card-meta">
-    <p class="selection-card-counts"><span>{escape(duplicate_note)}</span><span>{escape(harness_label)}</span></p>
-    <p class="selection-card-dates"><span>Created: {escape(created_at)}</span><span>Modified: {escape(modified_at)}</span></p>
+    <p class="selection-card-counts"><span>{escape(harness_label)}</span><span>{escape('Managed' if duplicate else 'External')}</span></p>
+    <p class="selection-card-dates"><span>Managed: {escape(managed_label)}</span><span>Status: {status_control}</span></p>
   </div>
   <div class="selection-card-actions">
-    <form class="selection-card-form external-import-form" action="/import-external" method="post">
-      <input type="hidden" name="type" value="{escape(content_type)}">
-      <input type="hidden" name="name" value="{escape(name)}">
-      <input type="hidden" name="harness" value="{escape(harness)}">
-      <input type="hidden" name="path" value="{escape(source_path)}">
-      <input type="hidden" name="scope" value="{escape(scope)}" data-scope-hidden>
-      <input type="hidden" name="return_to" value="{escape(return_to)}">
-      {button}
-    </form>
+    {action_control}
   </div>
 </article>"""
 
@@ -8944,6 +9255,7 @@ STYLES = """
   --primary-text: #ffffff;
   --accent: #06b6d4;
   --accent-soft: #cffafe;
+  --success: #15803d;
   --danger: #b42318;
   --external: #b7791f;
   --external-strong: #d97706;
@@ -8978,6 +9290,7 @@ STYLES = """
     --primary-text: #06111f;
     --accent: #22d3ee;
     --accent-soft: #083344;
+    --success: #22c55e;
     --external: #fbbf24;
     --external-strong: #f59e0b;
     --template: #2dd4bf;
@@ -9200,14 +9513,70 @@ p { margin: 4px 0 0; color: var(--muted); }
   color: var(--chrome-text);
   box-shadow: inset 0 -2px 0 var(--accent);
 }
-.rail-sync-form {
+.rail-bottom {
   margin-top: auto;
   padding-top: 14px;
   border-top: 1px solid color-mix(in srgb, var(--chrome-muted) 20%, transparent);
+  display: grid;
+  gap: 10px;
+}
+.rail-sync-form {
+  margin: 0;
 }
 .rail-sync-form button {
   flex: 1;
   min-width: 0;
+}
+.rail-update-status {
+  display: grid;
+  gap: 7px;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--chrome-muted) 18%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--chrome-3) 56%, transparent);
+  color: var(--chrome-muted);
+}
+.rail-update-status-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--chrome-text);
+  font-size: 12px;
+}
+.rail-update-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border-radius: 999px;
+  background: var(--chrome-muted);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--chrome-muted) 14%, transparent);
+}
+.rail-update-status[data-update-status="up-to-date"] .rail-update-dot {
+  background: var(--success);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 18%, transparent);
+}
+.rail-update-status[data-update-status="out-of-date"] .rail-update-dot {
+  background: var(--danger);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 18%, transparent);
+}
+.rail-update-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 8px;
+  font-size: 11px;
+  line-height: 1.2;
+}
+.rail-update-status code {
+  display: block;
+  padding: 7px;
+  border: 1px solid color-mix(in srgb, var(--chrome-muted) 16%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--chrome) 52%, transparent);
+  color: var(--chrome-text);
+  font-size: 11px;
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .pane-head, .editor-head {
   display: flex;
@@ -10019,6 +10388,39 @@ p { margin: 4px 0 0; color: var(--muted); }
 .external-import-form {
   grid-column: 1 / -1;
   display: block;
+}
+.external-sync-form {
+  display: none;
+}
+.external-sync-status {
+  display: inline-flex;
+  max-width: 100%;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.external-sync-status.ok {
+  color: color-mix(in srgb, var(--success) 78%, var(--muted));
+}
+.external-sync-status.unknown {
+  color: var(--muted);
+}
+button.external-sync-status.stale {
+  padding: 0;
+  color: var(--danger);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+button.external-sync-status.stale:hover,
+button.external-sync-status.stale:focus-visible {
+  color: color-mix(in srgb, var(--danger) 78%, var(--text));
+  outline: none;
 }
 .external-preview-path {
   margin: -4px 0 12px;

@@ -34,6 +34,37 @@ class WebFiltersProjectsAndRenderingTests(TempWDMTestCase):
         with self.assertRaisesRegex(ValueError, "Project path is not a directory"):
             self.web.add_project("bad", str(self.base / "missing"))
 
+    def test_update_status_detection_and_rendering(self) -> None:
+        brew = self.web.detect_install_method("/opt/homebrew/bin/wdm-ai")
+        self.assertEqual("Homebrew", brew["method"])
+        self.assertEqual("brew update && brew upgrade wdm-ai-management", brew["command"])
+
+        npm = self.web.detect_install_method("/Users/will/.npm-global/bin/wdm-ai")
+        self.assertEqual("npm", npm["method"])
+        self.assertEqual("npm update -g @wdm-uk/ai-management", npm["command"])
+
+        self.assertLess(self.web.compare_versions("1.2.0", "1.2.1"), 0)
+        self.assertEqual(0, self.web.compare_versions("1.2.0", "1.2"))
+        self.assertGreater(self.web.compare_versions("1.3.0", "1.2.9"), 0)
+
+        original = self.web.update_status_info
+        try:
+            self.web.update_status_info = lambda: {
+                "method": "Homebrew",
+                "command": "brew update && brew upgrade wdm-ai-management",
+                "status": "out-of-date",
+                "status_label": "Out of date",
+                "current": "1.2.0",
+                "latest": "",
+            }
+            html = self.web.render_update_status_panel()
+        finally:
+            self.web.update_status_info = original
+
+        self.assertIn('data-update-status="out-of-date"', html)
+        self.assertIn("Out of date", html)
+        self.assertIn("brew update &amp;&amp; brew upgrade wdm-ai-management", html)
+
     def test_run_web_opens_existing_server_without_rebinding_port(self) -> None:
         class FakeResponse:
             headers = {"Server": "AIManagementWeb/1.0 Python/3.14.5"}

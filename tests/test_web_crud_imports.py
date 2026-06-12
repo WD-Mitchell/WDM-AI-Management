@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import urllib.parse
+from pathlib import Path
 
 import yaml
 
@@ -194,16 +195,55 @@ class WebCrudImportAndPreviewTests(TempWDMTestCase):
         self.assertNotIn("toggleme", self.web.ALL_HARNESSES)
 
     def test_external_agent_candidates_edit_import_and_preview(self) -> None:
+        cursor_harness = self.content_root / "harnesses" / "core" / "cursor.json"
+        cursor_harness.parent.mkdir(parents=True, exist_ok=True)
+        cursor_harness.write_text(
+            json.dumps(
+                {
+                    "name": "cursor",
+                    "label": "Cursor",
+                    "default_enabled": True,
+                    "sync": {"paths": {"project": {"agents": ".cursor/agents/{name}.md"}}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.web.refresh_harness_runtime()
         external = self.project / ".codex" / "agents" / "outside.toml"
         external.parent.mkdir(parents=True, exist_ok=True)
         external.write_text(
             'name = "outside"\ndescription = "External codex agent"\ndeveloper_instructions = "## Mission\\nUse **markdown**."\n',
             encoding="utf-8",
         )
+        nested_codex = self.project / ".codex" / "agents" / "team" / "nested-codex.toml"
+        nested_codex.parent.mkdir(parents=True, exist_ok=True)
+        nested_codex.write_text('name = "nested-codex"\ndescription = "Nested codex agent"\n', encoding="utf-8")
+        nested_claude = self.project / ".claude" / "agents" / "platform" / "nested-claude.md"
+        nested_claude.parent.mkdir(parents=True, exist_ok=True)
+        nested_claude.write_text("---\nname: nested-claude\ndescription: Nested claude agent\n---\n\nBody\n", encoding="utf-8")
+        nested_copilot = self.project / ".github" / "agents" / "teams" / "nested-copilot.agent.md"
+        nested_copilot.parent.mkdir(parents=True, exist_ok=True)
+        nested_copilot.write_text("---\nname: nested-copilot\ndescription: Nested copilot agent\n---\n\nBody\n", encoding="utf-8")
+        nested_cursor = self.project / ".cursor" / "agents" / "team" / "nested-cursor.md"
+        nested_cursor.parent.mkdir(parents=True, exist_ok=True)
+        nested_cursor.write_text("---\nname: nested-cursor\ndescription: Nested cursor agent\n---\n\nBody\n", encoding="utf-8")
+        nested_gemini = self.project / ".gemini" / "agents" / "ops" / "nested-gemini.md"
+        nested_gemini.parent.mkdir(parents=True, exist_ok=True)
+        nested_gemini.write_text("---\nname: nested-gemini\ndescription: Nested gemini agent\n---\n\nBody\n", encoding="utf-8")
+        managed_source = self.write_agent("managed-external")
+        managed_link = self.project / ".codex" / "agents" / "managed" / "managed-external.toml"
+        managed_link.parent.mkdir(parents=True, exist_ok=True)
+        managed_link.symlink_to(managed_source)
 
         candidates = self.web.external_item_candidates("agents", self.project_scope)
-        self.assertEqual(["outside"], [item["name"] for item in candidates])
-        self.assertEqual("External codex agent", candidates[0]["description"])
+        names = [item["name"] for item in candidates]
+        self.assertEqual(["nested-claude", "nested-codex", "outside", "nested-copilot", "nested-cursor", "nested-gemini"], names)
+        self.assertNotIn("managed-external", names)
+        by_name = {item["name"]: item for item in candidates}
+        self.assertEqual("External codex agent", by_name["outside"]["description"])
+        self.assertEqual(nested_codex.resolve(), Path(by_name["nested-codex"]["path"]).resolve())
+        self.assertEqual(nested_copilot.resolve(), Path(by_name["nested-copilot"]["path"]).resolve())
+        self.assertEqual(nested_cursor.resolve(), Path(by_name["nested-cursor"]["path"]).resolve())
 
         self.web.save_external_item(
             {
@@ -229,11 +269,51 @@ class WebCrudImportAndPreviewTests(TempWDMTestCase):
         managed = self.content_root / "agents" / "core" / "outside-managed.md"
         self.assertTrue(managed.exists())
         self.assertIn("imported_harness: codex", managed.read_text(encoding="utf-8"))
+        self.assertIn("imported_source_sha256:", managed.read_text(encoding="utf-8"))
         self.assertIn("outside-managed", self.web.load_installed_type("agents"))
+
+        candidates = self.web.external_item_candidates("agents", self.project_scope)
+        outside = next(item for item in candidates if item["name"] == "outside")
+        self.assertTrue(outside["source_exists"])
+        self.assertEqual("outside-managed", outside["managed_name"])
+        self.assertEqual("up-to-date", outside["sync_status"])
+        card = self.web.render_external_card("agents", outside, self.project_scope, 1, {"source_mode": "combined"})
+        self.assertIn("data-edit-name=\"outside-managed\"", card)
+        self.assertIn(">Managed</button>", card)
+        self.assertIn("Managed: outside-managed", card)
+        self.assertIn("Up to date", card)
+
+        external.write_text(
+            'name = "outside"\ndescription = "Changed external"\ndeveloper_instructions = "Body"\n',
+            encoding="utf-8",
+        )
+        outside = next(item for item in self.web.external_item_candidates("agents", self.project_scope) if item["name"] == "outside")
+        self.assertEqual("out-of-date", outside["sync_status"])
+        stale_card = self.web.render_external_card("agents", outside, self.project_scope, 1, {"source_mode": "combined"})
+        self.assertIn('action="/sync-external"', stale_card)
+        self.assertIn("Out of date", stale_card)
+
+        status, _, _ = self.post_form(
+            self.web,
+            "/sync-external",
+            {
+                "type": "agents",
+                "name": "outside",
+                "managed_name": "outside-managed",
+                "harness": "codex",
+                "path": str(external),
+                "scope": self.project_scope,
+                "return_to": "/?type=agents&source=combined",
+            },
+        )
+        self.assertEqual(303, status)
+        self.assertIn("Changed external", managed.read_text(encoding="utf-8"))
+        outside = next(item for item in self.web.external_item_candidates("agents", self.project_scope) if item["name"] == "outside")
+        self.assertEqual("up-to-date", outside["sync_status"])
 
         rendered = self.web.rendered_preview_external_item("agents", "codex", str(external), self.project_scope)
         self.assertIn("rendered-structured-fields", rendered)
-        self.assertIn("Edited", rendered)
+        self.assertIn("Changed external", rendered)
 
     def test_rendered_preview_handles_markdown_toml_json_and_html(self) -> None:
         self.write_agent("codex-preview", body="## Mission\nUse **markdown**.\n")
