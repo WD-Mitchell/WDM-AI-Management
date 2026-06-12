@@ -96,10 +96,10 @@ jobs:
           cd homebrew-tap
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if git diff --quiet -- "Formula/${FORMULA_NAME}"; then
+          git add "Formula/${FORMULA_NAME}"
+          if git diff --cached --quiet -- "Formula/${FORMULA_NAME}"; then
             echo "Formula is already up to date."
             exit 0
           fi
-          git add "Formula/${FORMULA_NAME}"
           git commit -m "Update wdm-ai-management ${TAG}"
           git push
