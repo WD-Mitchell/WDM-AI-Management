@@ -28,10 +28,6 @@ class WdmAiManagement < Formula
     EOS
   end
 
-  def post_install
-    system bin/"wdm-ai", "bootstrap", "--quiet"
-  end
-
   test do
     system bin/"wdm-ai", "--help"
   end
