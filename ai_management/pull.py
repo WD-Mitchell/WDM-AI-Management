@@ -19,6 +19,8 @@ def safe_extract_tar(archive_path: Path, destination: Path) -> None:
             member_path = destination / member.name
             if not is_relative_to(member_path.resolve(), destination_resolved):
                 raise CLIError("Unsafe tarball path detected")
+            if member.issym() or member.islnk():
+                raise CLIError("Unsafe tarball link detected")
         tar.extractall(destination)
 
 

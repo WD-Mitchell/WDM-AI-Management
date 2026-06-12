@@ -14,17 +14,23 @@ permissions:
   contents: read
   id-token: write
 
+concurrency:
+  group: publish-npm
+  cancel-in-progress: false
+
 jobs:
   publish:
     name: Publish package
     runs-on: ubuntu-latest
     environment: npm-publish
+    timeout-minutes: 10
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.release.tag_name || inputs.ref || github.ref }}
+          persist-credentials: false
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -39,4 +45,4 @@ jobs:
         run: npm pack --dry-run
 
       - name: Publish to npm
-        run: npm publish --access public
+        run: npm publish --access public --provenance

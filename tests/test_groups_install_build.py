@@ -1,0 +1,270 @@
+from __future__ import annotations
+
+import json
+import tomllib
+from pathlib import Path
+
+import yaml
+
+from helpers import TempWDMTestCase
+
+
+class GroupsInstallAndBuildTests(TempWDMTestCase):
+    def test_group_parser_strips_comments_and_expands_wildcards(self) -> None:
+        self.write_agent("alpha")
+        self.write_agent("beta")
+        group = self.write_group(
+            "core",
+            """# Core tools
+[agents]
+alpha # keep this
+*
+alpha
+
+[skills]
+missing-skill
+""",
+        )
+        groups = self.load("ai_management.groups")
+
+        description, sections = groups.parse_section_file(group)
+
+        self.assertEqual("Core tools", description)
+        self.assertEqual(["alpha", "*", "alpha"], sections["agents"])
+        self.assertEqual(["alpha", "beta"], groups.parse_group_section(group, "agents"))
+
+    def test_get_all_type_discovers_each_supported_source_shape(self) -> None:
+        self.write_agent("agent-one")
+        self.write_skill("skill-one")
+        (self.content_root / "hooks" / "core").mkdir(parents=True)
+        (self.content_root / "hooks" / "core" / "pre-commit").write_text("#!/bin/sh\n", encoding="utf-8")
+        (self.content_root / "mcp" / "core").mkdir(parents=True)
+        (self.content_root / "mcp" / "core" / "server.json").write_text("{}", encoding="utf-8")
+        groups = self.load("ai_management.groups")
+
+        self.assertEqual(["agent-one"], groups.get_all_type("agents"))
+        self.assertEqual(["skill-one"], groups.get_all_type("skills"))
+        self.assertEqual(["pre-commit"], groups.get_all_type("hooks"))
+        self.assertEqual(["server"], groups.get_all_type("mcp"))
+
+    def test_resolve_selection_paths_expands_wildcard_and_dedupes(self) -> None:
+        self.write_agent("alpha")
+        self.write_agent("beta")
+        groups = self.load("ai_management.groups")
+
+        paths = groups.resolve_selection_paths("agents", ["alpha", "*", "alpha"])
+
+        self.assertEqual(
+            [self.content_root / "agents" / "core" / "alpha.md", self.content_root / "agents" / "core" / "beta.md"],
+            paths,
+        )
+
+    def test_install_state_load_save_install_uninstall_and_group(self) -> None:
+        self.write_agent("alpha")
+        self.write_agent("beta")
+        self.write_group("core", "[agents]\nalpha\nbeta\n")
+        install = self.load("ai_management.install")
+
+        install.save_installed_type("agents", ["alpha", "alpha", ""])
+        self.assertEqual(["alpha"], install.load_installed_type("agents"))
+
+        install.install_type("agents", ["beta", "missing"])
+        self.assertEqual(["alpha", "beta"], install.load_installed_type("agents"))
+
+        install.uninstall_type("agents", ["alpha"])
+        self.assertEqual(["beta"], install.load_installed_type("agents"))
+
+        install.uninstall_type("agents", ["beta"])
+        install.install_group("core", only_type="agents")
+        self.assertEqual(["alpha", "beta"], install.load_installed_type("agents"))
+
+    def test_parse_frontmatter_valid_missing_and_invalid(self) -> None:
+        build = self.load("ai_management.build")
+
+        fields, body = build.parse_frontmatter("---\nname: alpha\n---\n\nBody\n")
+        self.assertEqual({"name": "alpha"}, fields)
+        self.assertEqual("Body", body.strip())
+
+        self.assertEqual(({}, "Plain body"), build.parse_frontmatter("Plain body"))
+
+        fields, body = build.parse_frontmatter("---\nname: [\n---\nBody\n")
+        self.assertEqual({}, fields)
+        self.assertEqual("Body", body.strip())
+
+    def test_field_resolution_prefers_single_then_multi_then_global_then_base(self) -> None:
+        build = self.load("ai_management.build")
+        fields = {
+            "description": "base",
+            "global_description": "global",
+            "codex_copilot_description": "multi",
+            "codex_description": "single",
+            "claude_description": build.OMIT_SENTINEL,
+        }
+
+        self.assertEqual("single", build.resolve_field(fields, "codex", "description"))
+        self.assertEqual("multi", build.resolve_field(fields, "copilot", "description"))
+        self.assertEqual("global", build.resolve_field(fields, "gemini", "description"))
+        self.assertIsNone(build.resolve_field(fields, "claude", "description"))
+
+    def test_defaults_preserve_case_and_inject_reasoning(self) -> None:
+        defaults = self.content_root / "defaults.conf"
+        defaults.parent.mkdir(parents=True, exist_ok=True)
+        defaults.write_text(
+            """[codex]
+default = gpt-5
+default.model_reasoning_effort = medium
+
+[gemini]
+default = gemini-pro
+default.thinkingBudget = 4096
+""",
+            encoding="utf-8",
+        )
+        build = self.load("ai_management.build")
+
+        loaded = build.load_defaults(defaults)
+
+        self.assertEqual("gpt-5", loaded["codex"]["default"]["model"])
+        self.assertEqual("medium", loaded["codex"]["default"]["model_reasoning_effort"])
+        self.assertEqual("4096", loaded["gemini"]["default"]["thinkingBudget"])
+        self.assertEqual(
+            {"model": "gpt-5", "model_reasoning_effort": "medium"},
+            build.resolve_defaults({"model": "default"}, "codex", loaded),
+        )
+
+    def test_markdown_builder_filters_schema_applies_mapping_and_wraps_gemini_reasoning(self) -> None:
+        harness_dir = self.content_root / "harnesses" / "core"
+        harness_dir.mkdir(parents=True, exist_ok=True)
+        (harness_dir / "custom.json").write_text(
+            json.dumps(
+                {
+                    "name": "custom",
+                    "enabled": True,
+                    "schemas": {"agents": ["name", "instructions"]},
+                    "field_mappings": {"agents": {"body": "instructions"}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        build = self.load("ai_management.build")
+
+        custom = build.build_md_file(
+            {"name": "mapper", "description": "ignored"},
+            "Mapped body\n",
+            "custom",
+            ["name", "instructions"],
+            content_type="agents",
+        )
+        fields, body = build.parse_frontmatter(custom)
+        self.assertEqual({"name": "mapper", "instructions": "Mapped body"}, fields)
+        self.assertEqual("", body.strip())
+
+        gemini = build.build_md_file(
+            {"name": "g", "description": "d", "thinkingLevel": "HIGH"},
+            "Body\n",
+            "gemini",
+            build.AGENT_SCHEMAS["gemini"],
+            content_type="agents",
+        )
+        fields, _ = build.parse_frontmatter(gemini)
+        self.assertEqual({"thinkingBudget": 16384}, fields["thinkingConfig"])
+        self.assertNotIn("thinkingLevel", fields)
+
+    def test_codex_agent_builder_outputs_toml_and_requires_body_description_name(self) -> None:
+        build = self.load("ai_management.build")
+
+        raw = build.build_codex_agent_toml(
+            {
+                "name": "api-designer",
+                "description": "Design APIs",
+                "model": "gpt-5",
+                "model_reasoning_effort": "high",
+                "skills": ["api-design"],
+            },
+            "## Mission\nBuild reliable APIs.",
+        )
+        data = tomllib.loads(raw)
+
+        self.assertEqual("api-designer", data["name"])
+        self.assertEqual("gpt-5", data["model"])
+        self.assertEqual("high", data["model_reasoning_effort"])
+        self.assertEqual(["api-design"], data["skills"])
+        self.assertIn("## Mission", data["developer_instructions"])
+
+        with self.assertRaisesRegex(ValueError, "description"):
+            build.build_codex_agent_toml({"name": "missing-description"}, "Body")
+
+    def test_json_builder_applies_overrides_and_omit_sentinel(self) -> None:
+        build = self.load("ai_management.build")
+        content = """---
+name: shared
+codex_command: __omit__
+gemini_url: https://example.test/mcp
+extra: kept
+---
+{"command": "run-server", "url": "https://old.test"}
+"""
+
+        codex = json.loads(build.build_json_file(content, "codex"))
+        gemini = json.loads(build.build_json_file(content, "gemini"))
+
+        self.assertNotIn("command", codex)
+        self.assertEqual("https://old.test", codex["url"])
+        self.assertEqual("https://example.test/mcp", gemini["url"])
+        self.assertEqual("kept", gemini["extra"])
+
+    def test_mcp_builder_shapes_match_harness_contracts(self) -> None:
+        build = self.load("ai_management.build")
+        fields = {
+            "name": "filesystem",
+            "transport": "stdio",
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-filesystem"],
+            "env": {"ROOT": "/tmp"},
+            "env_vars": ["TOKEN"],
+            "tools": ["read_file"],
+            "bearer_token_env_var": "TOKEN",
+        }
+
+        claude = build.build_mcp_entry(dict(fields), "claude")
+        copilot = build.build_mcp_entry(dict(fields), "copilot")
+        codex = build.build_mcp_entry(dict(fields), "codex")
+        gemini = build.build_mcp_entry(dict(fields), "gemini")
+
+        self.assertNotIn("type", claude)
+        self.assertEqual("local", copilot["type"])
+        self.assertEqual(["read_file"], copilot["tools"])
+        self.assertEqual(["TOKEN"], codex["env_vars"])
+        self.assertNotIn("tools", codex)
+        self.assertNotIn("bearer_token_env_var", gemini)
+
+    def test_builders_emit_files_for_agents_skills_rules_workflows_hooks_and_mcp(self) -> None:
+        self.write_agent("agent-one")
+        self.write_skill("skill-one")
+        (self.content_root / "rules" / "core").mkdir(parents=True)
+        (self.content_root / "rules" / "core" / "rule-one.md").write_text("---\nname: rule-one\n---\nRule body\n", encoding="utf-8")
+        (self.content_root / "workflows" / "core").mkdir(parents=True)
+        (self.content_root / "workflows" / "core" / "flow-one.md").write_text("---\nname: flow-one\n---\nFlow body\n", encoding="utf-8")
+        (self.content_root / "hooks" / "core").mkdir(parents=True)
+        (self.content_root / "hooks" / "core" / "pre-commit").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        self.write_mcp("filesystem", "---\nname: filesystem\ncommand: npx\n---\n")
+        build = self.load("ai_management.build")
+
+        self.assertEqual({"codex": 1, "claude": 1}, build.build_agents(self.content_root / "agents" / "core", ["codex", "claude"]))
+        self.assertEqual({"codex": 1}, build.build_skills(self.content_root / "skills" / "core", ["codex"]))
+        self.assertEqual({"claude": 1}, build.build_rules(self.content_root / "rules" / "core", ["claude"]))
+        self.assertEqual({"claude": 1}, build.build_workflows(self.content_root / "workflows" / "core", ["claude"]))
+        self.assertEqual({"codex": 1}, build.build_hooks(self.content_root / "hooks" / "core", ["codex"]))
+        self.assertEqual({"codex": 1, "claude": 1}, build.build_mcp(self.content_root / "mcp" / "core", ["codex", "claude"]))
+
+        self.assertTrue((self.content_root / "agents" / "codex" / "agent-one.toml").exists())
+        self.assertTrue((self.content_root / "agents" / "claude" / "agent-one.md").exists())
+        self.assertTrue((self.content_root / "skills" / "codex" / "skill-one" / "SKILL.md").exists())
+        self.assertTrue((self.content_root / "rules" / "claude" / "rule-one.md").exists())
+        self.assertTrue((self.content_root / "workflows" / "claude" / "flow-one.md").exists())
+        self.assertTrue((self.content_root / "hooks" / "codex" / "pre-commit").exists())
+        self.assertTrue((self.content_root / "mcp" / "codex" / "filesystem.toml").exists())
+        self.assertTrue((self.content_root / "mcp" / "claude" / "filesystem.json").exists())
+
+        data = yaml.safe_load((self.content_root / "agents" / "claude" / "agent-one.md").read_text(encoding="utf-8").split("---", 2)[1])
+        self.assertEqual("agent-one", data["name"])
