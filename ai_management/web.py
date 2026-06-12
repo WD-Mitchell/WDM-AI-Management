@@ -6507,6 +6507,7 @@ def render_update_status_panel() -> str:
     status = str(info.get("status") or "unknown")
     latest = str(info.get("latest") or "")
     latest_line = f'<span>Latest {escape(latest)}</span>' if latest else ""
+    command_line = f'<code>{escape(str(info.get("command") or ""))}</code>' if status == "out-of-date" else ""
     return f"""<section class="rail-update-status" data-update-status="{escape(status)}">
   <div class="rail-update-status-head">
     <span class="rail-update-dot" aria-hidden="true"></span>
@@ -6517,7 +6518,7 @@ def render_update_status_panel() -> str:
     <span>v{escape(str(info.get("current") or APP_VERSION))}</span>
     {latest_line}
   </div>
-  <code>{escape(str(info.get("command") or ""))}</code>
+  {command_line}
 </section>"""
 
 

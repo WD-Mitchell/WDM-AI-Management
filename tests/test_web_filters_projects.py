@@ -65,6 +65,24 @@ class WebFiltersProjectsAndRenderingTests(TempWDMTestCase):
         self.assertIn("Out of date", html)
         self.assertIn("brew update &amp;&amp; brew upgrade wdm-ai-management", html)
 
+        try:
+            self.web.update_status_info = lambda: {
+                "method": "Homebrew",
+                "command": "brew update && brew upgrade wdm-ai-management",
+                "status": "up-to-date",
+                "status_label": "Up to date",
+                "current": "1.2.1",
+                "latest": "",
+            }
+            html = self.web.render_update_status_panel()
+        finally:
+            self.web.update_status_info = original
+
+        self.assertIn('data-update-status="up-to-date"', html)
+        self.assertIn("Up to date", html)
+        self.assertNotIn("brew update", html)
+        self.assertNotIn("<code>", html)
+
     def test_run_web_opens_existing_server_without_rebinding_port(self) -> None:
         class FakeResponse:
             headers = {"Server": "AIManagementWeb/1.0 Python/3.14.5"}
