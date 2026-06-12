@@ -1,6 +1,8 @@
-include Language::Python::Virtualenv
+require "language/python"
 
 class WdmAiManagement < Formula
+  include Language::Python::Virtualenv
+
   desc "Manage AI agents, skills, MCP servers, rules, workflows, hooks, and harnesses"
   homepage "https://github.com/WD-Mitchell/WDM-AI-Management"
   url "https://github.com/WD-Mitchell/WDM-AI-Management/archive/refs/tags/v0.1.0.tar.gz"

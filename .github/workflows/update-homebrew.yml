@@ -71,8 +71,9 @@ jobs:
               r'url ".*"',
               f'url "https://github.com/{repo}/archive/refs/tags/{tag}.tar.gz"',
               text,
+              count=1,
           )
-          text = re.sub(r'sha256 ".*"', f'sha256 "{sha}"', text)
+          text = re.sub(r'sha256 ".*"', f'sha256 "{sha}"', text, count=1)
           output.write_text(text, encoding="utf-8")
           PY
 

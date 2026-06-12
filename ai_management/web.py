@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 import tomllib
+import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
@@ -357,15 +358,37 @@ class ReloadableThreadingHTTPServer(ThreadingHTTPServer):
     allow_reuse_address = True
 
 
+def browser_url(host: str, port: int) -> str:
+    browser_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
+    return f"http://{browser_host}:{port}/"
+
+
+def web_server_responding(host: str, port: int, timeout: float = 0.5) -> bool:
+    request = urllib.request.Request(browser_url(host, port), method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout):
+            return True
+    except urllib.error.HTTPError:
+        return True
+    except (OSError, TimeoutError, urllib.error.URLError):
+        return False
+
+
 def run_web(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = False, reload: bool = False) -> int:
     ensure_source_root()
+    url = browser_url(host, port)
+    if web_server_responding(host, port):
+        print(f"AI Management web UI already running at {url}")
+        if open_browser:
+            webbrowser.open(url)
+        return 0
     if reload:
         os.environ[RELOAD_ENV] = "1"
         start_reload_watcher()
     else:
         os.environ.pop(RELOAD_ENV, None)
     server = ReloadableThreadingHTTPServer((host, port), ManagementHandler)
-    url = f"http://{host}:{server.server_port}/"
+    url = browser_url(host, server.server_port)
     print(f"AI Management web UI running at {url}")
     if reload:
         print("Reload mode enabled. Python/UI changes will restart the server and refresh the page.")
