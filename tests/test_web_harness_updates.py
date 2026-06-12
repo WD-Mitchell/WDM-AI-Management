@@ -93,6 +93,36 @@ class WebHarnessUpdateTests(unittest.TestCase):
         response = handler.wfile.getvalue().decode("iso-8859-1")
         self.assertIn("303", response)
 
+    def post_bulk_install(self, names: list[str], targets: list[str]) -> None:
+        payload: list[tuple[str, str]] = [
+            ("type", "agents"),
+            ("scope", self.project_scope),
+            ("return_to", "/?type=agents"),
+        ]
+        payload.extend(("names", name) for name in names)
+        payload.extend(("targets", target) for target in targets)
+        data = urllib.parse.urlencode(payload).encode("utf-8")
+
+        handler = object.__new__(self.web.ManagementHandler)
+        handler.path = "/bulk-install"
+        handler.command = "POST"
+        handler.request_version = "HTTP/1.1"
+        handler.requestline = "POST /bulk-install HTTP/1.1"
+        handler.client_address = ("127.0.0.1", 0)
+        handler.server = None
+        handler.close_connection = True
+        handler.rfile = io.BytesIO(data)
+        handler.wfile = io.BytesIO()
+        handler.log_message = lambda *args: None
+        headers = Message()
+        headers["Content-Length"] = str(len(data))
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+        handler.headers = headers
+
+        handler.do_POST()
+        response = handler.wfile.getvalue().decode("iso-8859-1")
+        self.assertIn("303", response)
+
     def test_project_update_creates_selected_harness_symlinks_and_marker(self) -> None:
         self.web.update_harness_installation("agents", "smoke", self.project_scope, ["codex", "claude", "copilot"])
 
@@ -136,6 +166,34 @@ class WebHarnessUpdateTests(unittest.TestCase):
         self.assertFalse((self.project / ".codex" / "agents" / "smoke.toml").exists())
         self.assertFalse((self.project / ".claude" / "agents" / "smoke.md").exists())
         self.assertEqual("", self.read_project_installed())
+
+    def test_bulk_update_sets_selected_harnesses_for_multiple_items(self) -> None:
+        self.write_agent("alpha")
+        self.write_agent("beta")
+        self.web.bulk_update_harness_installation("agents", ["alpha", "beta"], self.project_scope, ["codex", "claude"])
+
+        self.assertTrue((self.project / ".codex" / "agents" / "alpha.toml").is_symlink())
+        self.assertTrue((self.project / ".claude" / "agents" / "alpha.md").is_symlink())
+        self.assertTrue((self.project / ".codex" / "agents" / "beta.toml").is_symlink())
+        self.assertTrue((self.project / ".claude" / "agents" / "beta.md").is_symlink())
+
+        self.web.bulk_update_harness_installation("agents", ["alpha", "beta"], self.project_scope, ["claude"])
+
+        self.assertFalse((self.project / ".codex" / "agents" / "alpha.toml").exists())
+        self.assertTrue((self.project / ".claude" / "agents" / "alpha.md").is_symlink())
+        self.assertFalse((self.project / ".codex" / "agents" / "beta.toml").exists())
+        self.assertTrue((self.project / ".claude" / "agents" / "beta.md").is_symlink())
+
+    def test_bulk_install_post_updates_selected_items(self) -> None:
+        self.write_agent("alpha")
+        self.write_agent("beta")
+
+        self.post_bulk_install(["alpha", "beta"], ["codex"])
+
+        self.assertTrue((self.project / ".codex" / "agents" / "alpha.toml").is_symlink())
+        self.assertTrue((self.project / ".codex" / "agents" / "beta.toml").is_symlink())
+        installed = set(self.read_project_installed().splitlines())
+        self.assertEqual({"alpha", "beta"}, installed)
 
     def test_global_update_uses_fake_home_and_global_installed_marker(self) -> None:
         self.web.update_harness_installation("agents", "smoke", "global", ["codex"])
@@ -184,10 +242,34 @@ class WebHarnessUpdateTests(unittest.TestCase):
 
         self.assertIn('name="harness_update" value="1"', html)
         self.assertIn('name="targets"', html)
+        self.assertIn('form="bulk-harness-update-form"', html)
+        self.assertIn('data-bulk-card-selection', html)
+
+    def test_selection_page_renders_bulk_update_form_for_content_types(self) -> None:
+        html = self.web.render_selection_page(
+            "agents",
+            [self.web.item_summary("agents", "smoke")],
+            set(),
+            self.project_scope,
+            1,
+            {},
+        )
+
+        self.assertIn('action="/bulk-install"', html)
+        self.assertIn("Select visible", html)
+        self.assertIn("Update selected", html)
+
+        paged = self.web.render_bulk_update_form("agents", self.project_scope, {"sort": "name-desc"}, 3)
+        self.assertIn("page=3", paged)
+        self.assertIn("sort=name-desc", paged)
 
     def test_unknown_item_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "Unknown agents item"):
             self.web.update_harness_installation("agents", "missing", self.project_scope, ["codex"])
+
+    def test_bulk_update_requires_selection(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Select at least one item"):
+            self.web.bulk_update_harness_installation("agents", [], self.project_scope, ["codex"])
 
 
 if __name__ == "__main__":

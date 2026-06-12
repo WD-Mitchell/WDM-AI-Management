@@ -2866,6 +2866,19 @@ class ManagementHandler(BaseHTTPRequestHandler):
                 else:
                     target = f"/?type={urllib.parse.quote(form.get('type', 'agents'))}&name={urllib.parse.quote(form.get('name', ''))}&scope={urllib.parse.quote(form.get('scope', 'global'))}"
                 self.redirect(target)
+            elif path == "/bulk-install":
+                bulk_update_harness_installation(
+                    form.get("type", ""),
+                    parsed.get("names", []),
+                    form.get("scope", "global"),
+                    parsed.get("targets", []),
+                )
+                return_to = form.get("return_to", "")
+                if return_to.startswith("/?"):
+                    target = return_to
+                else:
+                    target = f"/?type={urllib.parse.quote(form.get('type', 'agents'))}&scope={urllib.parse.quote(form.get('scope', 'global'))}"
+                self.redirect(target)
             elif path == "/harnesses/toggle":
                 name = form.get("name", "").strip()
                 action = form.get("action", "enable")
@@ -3135,6 +3148,22 @@ def update_harness_installation(content_type: str, name: str, scope: str, target
         raise ValueError(f"{content_type} uses aggregate config for {labels}; use Sync for those targets.")
 
     set_scope_installed(content_type, name, scope, bool(selected_supported))
+
+
+def bulk_update_harness_installation(content_type: str, names: list[str], scope: str, target_values: list[str]) -> list[str]:
+    if content_type not in CONTENT_TYPES:
+        raise ValueError(f"{content_type} cannot be installed.")
+    selected_names = [name.strip() for name in names if name.strip()]
+    selected_names = list(dict.fromkeys(selected_names))
+    if not selected_names:
+        raise ValueError("Select at least one item to update.")
+    available = set(list_names(content_type))
+    missing = [name for name in selected_names if name not in available]
+    if missing:
+        raise ValueError(f"Unknown {content_type} item: {', '.join(missing)}")
+    for name in selected_names:
+        update_harness_installation(content_type, name, scope, target_values)
+    return selected_names
 
 
 def render_index(
@@ -5084,6 +5113,7 @@ def page(content_type: str, selected_name: str | None, scope: str, body: str, fi
         const pagination = document.querySelector('.pagination-footer');
         if (nextGrid && grid) grid.replaceWith(nextGrid);
         if (nextPagination && pagination) pagination.replaceWith(nextPagination);
+        updateBulkSelectionState();
         window.history.replaceState(null, '', url.toString());
         if (sourceInput && document.activeElement === sourceInput) {{
           const start = sourceInput.selectionStart;
@@ -5161,6 +5191,36 @@ def page(content_type: str, selected_name: str | None, scope: str, body: str, fi
         submitFilterForm(menu.closest('form'));
       }}
     }}
+    function bulkSelectionInputs() {{
+      return Array.from(document.querySelectorAll('[data-bulk-card-selection]'));
+    }}
+    function updateBulkSelectionState() {{
+      const inputs = bulkSelectionInputs();
+      const selected = inputs.filter(input => input.checked);
+      inputs.forEach(input => {{
+        const card = input.closest('.selection-card');
+        if (card) card.dataset.bulkSelected = input.checked ? 'true' : 'false';
+      }});
+      document.querySelectorAll('[data-bulk-selection-count]').forEach(label => {{
+        label.textContent = selected.length + ' selected';
+      }});
+      document.querySelectorAll('[data-bulk-update-submit]').forEach(button => {{
+        button.disabled = selected.length === 0;
+      }});
+      document.querySelectorAll('[data-bulk-select-visible]').forEach(button => {{
+        const allVisibleSelected = inputs.length > 0 && selected.length === inputs.length;
+        button.textContent = allVisibleSelected ? 'Clear visible' : 'Select visible';
+        button.disabled = inputs.length === 0;
+      }});
+    }}
+    function toggleVisibleBulkSelection(button) {{
+      const inputs = bulkSelectionInputs();
+      const allVisibleSelected = inputs.length > 0 && inputs.every(input => input.checked);
+      inputs.forEach(input => {{
+        input.checked = !allVisibleSelected;
+      }});
+      updateBulkSelectionState();
+    }}
     function closeHarnessMenus(exceptMenu = null) {{
       document.querySelectorAll('[data-harness-menu][open]').forEach(menu => {{
         if (menu !== exceptMenu) menu.removeAttribute('open');
@@ -5194,6 +5254,12 @@ def page(content_type: str, selected_name: str | None, scope: str, body: str, fi
       if (deselectAllHarnesses) {{
         event.preventDefault();
         setHarnessMenuSelection(deselectAllHarnesses, false);
+        return;
+      }}
+      const selectVisibleBulk = event.target.closest('[data-bulk-select-visible]');
+      if (selectVisibleBulk) {{
+        event.preventDefault();
+        toggleVisibleBulkSelection(selectVisibleBulk);
         return;
       }}
       const selectionCard = event.target.closest('[data-selection-preview-card]');
@@ -5772,6 +5838,14 @@ def page(content_type: str, selected_name: str | None, scope: str, body: str, fi
       }}
     }});
     document.addEventListener('submit', event => {{
+      const bulkForm = event.target.closest('[data-bulk-update-form]');
+      if (bulkForm) {{
+        updateBulkSelectionState();
+        if (!bulkSelectionInputs().some(input => input.checked)) {{
+          event.preventDefault();
+        }}
+        return;
+      }}
       const deleteForm = event.target.closest('[data-delete-form]');
       if (deleteForm) {{
         event.preventDefault();
@@ -5823,6 +5897,11 @@ def page(content_type: str, selected_name: str | None, scope: str, body: str, fi
       const externalPreviewHarnessSelect = event.target.closest('[data-external-preview-harness-select]');
       if (externalPreviewHarnessSelect) {{
         loadExternalSelectionPreview(externalPreviewHarnessSelect.dataset.externalType, externalPreviewHarnessSelect.dataset.externalName, externalPreviewHarnessSelect.value, externalPreviewHarnessSelect.dataset.externalPath, externalPreviewHarnessSelect.dataset.externalScope);
+        return;
+      }}
+      const bulkSelection = event.target.closest('[data-bulk-card-selection]');
+      if (bulkSelection) {{
+        updateBulkSelectionState();
         return;
       }}
       const importSourceOption = event.target.closest('[data-import-source-option]');
@@ -5896,6 +5975,7 @@ def page(content_type: str, selected_name: str | None, scope: str, body: str, fi
       resetTemplateSectionEditors(document);
       resetTemplateFieldSectionEditors(document);
       updateReactivePaths();
+      updateBulkSelectionState();
       applyDynamicPageSize(50);
     }});
     {render_reload_script()}
@@ -6474,7 +6554,7 @@ def render_selection_page(
     else:
         count = f"{len(filtered)} of {len(summaries)} item" + ("" if len(summaries) == 1 else "s")
     summary = render_selection_summary(content_type, scope, normalized_filters, group_names)
-    actions = render_selection_actions(content_type, scope, singular, new_view, normalized_filters)
+    actions = render_selection_actions(content_type, scope, singular, new_view, normalized_filters, current_page)
     pagination = render_selection_pagination(content_type, scope, current_page, total_pages, normalized_filters, count)
     return f"""<section class="selection-page">
   {actions}
@@ -6737,7 +6817,7 @@ def render_selection_summary(
 </div>"""
 
 
-def render_selection_actions(content_type: str, scope: str, singular: str, new_view: str, filters: dict[str, Any]) -> str:
+def render_selection_actions(content_type: str, scope: str, singular: str, new_view: str, filters: dict[str, Any], current_page: int = 1) -> str:
     create_href = f"/?type={urllib.parse.quote(content_type)}&name=&scope={urllib.parse.quote(scope)}{new_view}"
     if content_type == "templates":
         template_param = urllib.parse.quote(str(filters.get("template_type") or "agents"))
@@ -6760,11 +6840,13 @@ def render_selection_actions(content_type: str, scope: str, singular: str, new_v
         <span>{label}</span>
       </label>"""
         )
+    bulk_form = render_bulk_update_form(content_type, scope, filters, current_page) if content_type in CONTENT_TYPES else ""
     return f"""<div class="selection-bottom-actions">
   <div class="selection-action-buttons">
     <a class="button" href="{create_href}">Create {escape(singular.title())}</a>
     <button type="button" class="button secondary" data-open-import-modal data-import-type="{escape(content_type)}" data-import-scope="{escape(scope)}">Import</button>
   </div>
+  {bulk_form}
   <form class="source-mode-form" method="get" action="/">
     <input type="hidden" name="type" value="{escape(content_type)}">
     <input type="hidden" name="scope" value="{escape(scope)}" data-scope-hidden>
@@ -6775,6 +6857,26 @@ def render_selection_actions(content_type: str, scope: str, singular: str, new_v
     </fieldset>
   </form>
 </div>"""
+
+
+def render_bulk_update_form(content_type: str, scope: str, filters: dict[str, Any], current_page: int = 1) -> str:
+    extra = selection_query_params(filters)
+    return_to = f"/?type={urllib.parse.quote(content_type)}&scope={urllib.parse.quote(scope)}&page={max(1, current_page)}"
+    if extra:
+        return_to += f"&{extra}"
+    statuses: dict[str, dict[str, Any]] = {}
+    for harness in ALL_HARNESSES:
+        destination, _ = harness_destination(content_type, "__bulk__", harness, scope)
+        statuses[harness] = {"supported": destination is not None, "checked": False, "path": str(destination) if destination else ""}
+    return f"""<form id="bulk-harness-update-form" class="bulk-update-form" action="/bulk-install" method="post" data-bulk-update-form>
+    <input type="hidden" name="type" value="{escape(content_type)}">
+    <input type="hidden" name="scope" value="{escape(scope)}" data-scope-hidden>
+    <input type="hidden" name="return_to" value="{escape(return_to)}">
+    <button type="button" class="secondary bulk-select-visible" data-bulk-select-visible>Select visible</button>
+    <span class="bulk-selection-count" data-bulk-selection-count>0 selected</span>
+    {render_harness_multiselect(statuses)}
+    <button type="submit" class="secondary selection-card-action-update" data-bulk-update-submit disabled>Update selected</button>
+  </form>"""
 
 
 def render_sort_filter_dropdown(selected_sort: str) -> str:
@@ -6981,6 +7083,12 @@ def render_selection_card(
 </form>"""
     else:
         install_control = """<button type="button" class="secondary selection-card-action-update" disabled>Update</button>"""
+    bulk_select = ""
+    if content_type in CONTENT_TYPES:
+        bulk_select = f"""<label class="selection-card-bulk-select" title="Select {escape(name)} for bulk update">
+        <input type="checkbox" name="names" value="{escape(name)}" form="bulk-harness-update-form" data-bulk-card-selection aria-label="Select {escape(name)} for bulk update">
+        <span aria-hidden="true"></span>
+      </label>"""
     preview_attrs = ""
     if content_type in PREVIEW_TYPES:
         preview_attrs = f""" data-selection-preview-card data-preview-type="{escape(content_type)}" data-preview-name="{escape(name)}" tabindex="0" aria-label="Preview {escape(name)}" title="Preview {escape(name)}" """
@@ -6994,6 +7102,7 @@ def render_selection_card(
     return f"""<article class="{card_class}"{preview_attrs}>
   <div class="selection-card-main">
     <div class="selection-card-title">
+      {bulk_select}
       <span class="selection-card-name">{escape(name)}</span>
       {scope_icons}
       <a class="selection-card-edit" href="{edit_href}" title="Edit {escape(name)}" aria-label="Edit {escape(name)}" data-selection-edit-button data-edit-type="{escape(content_type)}" data-edit-name="{escape(name)}" data-edit-scope="{escape(scope)}" data-edit-view="form">Edit</a>
@@ -9167,6 +9276,35 @@ p { margin: 4px 0 0; color: var(--muted); }
   align-items: center;
   gap: 8px;
 }
+.bulk-update-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin-left: auto;
+  padding: 4px;
+  border: 1px solid color-mix(in srgb, var(--primary) 22%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--primary) 5%, var(--surface));
+}
+.bulk-update-form .harness-multiselect {
+  width: 170px;
+}
+.bulk-update-form .harness-multiselect .harness-menu-options {
+  top: calc(100% + 8px);
+  bottom: auto;
+}
+.bulk-select-visible {
+  min-width: 96px;
+}
+.bulk-selection-count {
+  min-width: 68px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+  text-align: center;
+}
 .selection-bottom-actions .button {
   min-height: 32px;
   padding: 6px 10px;
@@ -9175,7 +9313,7 @@ p { margin: 4px 0 0; color: var(--muted); }
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-left: auto;
+  margin-left: 0;
 }
 .hide-global-loaded-option {
   min-height: 32px;
@@ -9362,6 +9500,11 @@ p { margin: 4px 0 0; color: var(--muted); }
   transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease, transform 140ms ease;
   overflow: visible;
 }
+.selection-card[data-bulk-selected="true"] {
+  border-color: var(--primary);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--primary) 10%, var(--surface-raised)), var(--surface));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary) 42%, transparent), var(--shadow-sm);
+}
 .selection-card::after {
   content: "";
   position: absolute;
@@ -9481,6 +9624,49 @@ p { margin: 4px 0 0; color: var(--muted); }
   align-items: center;
   gap: 8px;
   min-width: 0;
+}
+.selection-card-bulk-select {
+  flex: 0 0 22px;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.selection-card-bulk-select input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.selection-card-bulk-select span {
+  width: 18px;
+  height: 18px;
+  display: block;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px transparent;
+}
+.selection-card-bulk-select:hover span,
+.selection-card-bulk-select input:focus-visible + span {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 16%, transparent);
+}
+.selection-card-bulk-select input:checked + span {
+  border-color: var(--primary);
+  background: var(--primary);
+  box-shadow: inset 0 0 0 3px var(--primary);
+}
+.selection-card-bulk-select input:checked + span::after {
+  content: "";
+  width: 8px;
+  height: 4px;
+  display: block;
+  margin: 5px 0 0 4px;
+  border-left: 2px solid var(--primary-text);
+  border-bottom: 2px solid var(--primary-text);
+  transform: rotate(-45deg);
 }
 .selection-card-title > .selection-card-name {
   min-width: 0;
