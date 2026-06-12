@@ -6442,9 +6442,32 @@ def run_update_probe(args: list[str], timeout: float = 2.5) -> tuple[int, str]:
     return completed.returncode, (completed.stdout or "").strip()
 
 
+PACKAGE_REGISTRY_LATEST_URL = "https://registry.npmjs.org/%40wdm-uk%2Fai-management/latest"
+PACKAGE_REGISTRY_NAME = "@wdm-uk/ai-management"
+
+
+def registry_latest_version(timeout: float = 3.0) -> str:
+    request = urllib.request.Request(
+        PACKAGE_REGISTRY_LATEST_URL,
+        headers={"Accept": "application/json", "User-Agent": f"wdm-ai/{APP_VERSION}"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except (OSError, TimeoutError, urllib.error.URLError, json.JSONDecodeError):
+        return ""
+    version = data.get("version") if isinstance(data, dict) else None
+    return str(version).strip() if version else ""
+
+
 def npm_latest_version() -> str:
-    code, output = run_update_probe(["npm", "view", "@wdm-uk/ai-management", "version"], 3.0)
+    code, output = run_update_probe(["npm", "view", PACKAGE_REGISTRY_NAME, "version"], 3.0)
     return output.splitlines()[-1].strip() if code == 0 and output.strip() else ""
+
+
+def latest_available_version() -> str:
+    return registry_latest_version() or npm_latest_version()
 
 
 def brew_outdated() -> str:
@@ -6481,15 +6504,9 @@ def update_status_info(force: bool = False) -> dict[str, str]:
     info = detect_install_method()
     status = "unknown"
     latest = ""
-    method = info["method"]
-    if method == "Homebrew" and shutil.which("brew"):
-        status = brew_outdated()
-    elif method in {"npm", "Bun"} and shutil.which("npm"):
-        latest = npm_latest_version()
-        if latest:
-            status = "out-of-date" if compare_versions(APP_VERSION, latest) < 0 else "up-to-date"
-    elif method == "Source":
-        status = "unknown"
+    latest = latest_available_version()
+    if latest:
+        status = "out-of-date" if compare_versions(APP_VERSION, latest) < 0 else "up-to-date"
     info = {
         **info,
         "status": status,

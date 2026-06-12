@@ -47,6 +47,24 @@ class WebFiltersProjectsAndRenderingTests(TempWDMTestCase):
         self.assertEqual(0, self.web.compare_versions("1.2.0", "1.2"))
         self.assertGreater(self.web.compare_versions("1.3.0", "1.2.9"), 0)
 
+        original_latest = self.web.latest_available_version
+        original_brew_outdated = self.web.brew_outdated
+        try:
+            self.web.latest_available_version = lambda: "999.0.0"
+
+            def fail_brew_outdated() -> str:
+                self.fail("Homebrew outdated state should not drive update status")
+
+            self.web.brew_outdated = fail_brew_outdated
+            info = self.web.update_status_info(force=True)
+        finally:
+            self.web.latest_available_version = original_latest
+            self.web.brew_outdated = original_brew_outdated
+            self.web.UPDATE_STATUS_CACHE.clear()
+
+        self.assertEqual("out-of-date", info["status"])
+        self.assertEqual("999.0.0", info["latest"])
+
         original = self.web.update_status_info
         try:
             self.web.update_status_info = lambda: {
@@ -55,7 +73,7 @@ class WebFiltersProjectsAndRenderingTests(TempWDMTestCase):
                 "status": "out-of-date",
                 "status_label": "Out of date",
                 "current": "1.2.0",
-                "latest": "",
+                "latest": "1.2.1",
             }
             html = self.web.render_update_status_panel()
         finally:
@@ -63,6 +81,7 @@ class WebFiltersProjectsAndRenderingTests(TempWDMTestCase):
 
         self.assertIn('data-update-status="out-of-date"', html)
         self.assertIn("Out of date", html)
+        self.assertIn("Latest 1.2.1", html)
         self.assertIn("brew update &amp;&amp; brew upgrade wdm-ai-management", html)
 
         try:
