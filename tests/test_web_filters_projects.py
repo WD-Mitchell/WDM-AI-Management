@@ -68,6 +68,35 @@ class WebFiltersProjectsAndRenderingTests(TempWDMTestCase):
             self.web.ReloadableThreadingHTTPServer = original_server
             self.web.ensure_source_root = original_ensure
 
+    def test_run_web_opens_existing_server_when_bind_reports_port_in_use(self) -> None:
+        opened: list[str] = []
+        original_probe = self.web.web_server_responding
+        original_open = self.web.webbrowser.open
+        original_server = self.web.ReloadableThreadingHTTPServer
+        original_ensure = self.web.ensure_source_root
+        try:
+            self.web.web_server_responding = lambda host, port: False
+            self.web.webbrowser.open = lambda url: opened.append(url)
+            self.web.ensure_source_root = lambda: None
+
+            def busy_server(*args, **kwargs):
+                raise OSError(self.web.errno.EADDRINUSE, "Address already in use")
+
+            self.web.ReloadableThreadingHTTPServer = busy_server
+
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                result = self.web.run_web(host="127.0.0.1", port=8765, open_browser=True)
+
+            self.assertEqual(0, result)
+            self.assertIn("already running at http://127.0.0.1:8765/", output.getvalue())
+            self.assertEqual(["http://127.0.0.1:8765/"], opened)
+        finally:
+            self.web.web_server_responding = original_probe
+            self.web.webbrowser.open = original_open
+            self.web.ReloadableThreadingHTTPServer = original_server
+            self.web.ensure_source_root = original_ensure
+
     def test_install_counts_global_and_project_markers(self) -> None:
         self.write_agent("alpha")
         self.write_agent("beta")

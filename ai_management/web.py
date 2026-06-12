@@ -6,6 +6,7 @@ import importlib
 import io
 import json
 import os
+import errno
 import re
 import shutil
 import sys
@@ -387,7 +388,15 @@ def run_web(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = Fals
         start_reload_watcher()
     else:
         os.environ.pop(RELOAD_ENV, None)
-    server = ReloadableThreadingHTTPServer((host, port), ManagementHandler)
+    try:
+        server = ReloadableThreadingHTTPServer((host, port), ManagementHandler)
+    except OSError as exc:
+        if exc.errno == errno.EADDRINUSE:
+            print(f"AI Management web UI already running at {url}")
+            if open_browser:
+                webbrowser.open(url)
+            return 0
+        raise
     url = browser_url(host, server.server_port)
     print(f"AI Management web UI running at {url}")
     if reload:
