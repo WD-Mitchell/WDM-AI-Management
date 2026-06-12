@@ -34,6 +34,16 @@ def detect_content_root() -> Path:
     return AI_MGMT_HOME
 
 
+def package_version() -> str:
+    package_json = REPO_ROOT / "package.json"
+    try:
+        data = json.loads(package_json.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return "unknown"
+    return str(data.get("version") or "unknown")
+
+
+APP_VERSION = package_version()
 CONTENT_ROOT = detect_content_root()
 GROUPS_DIR = CONTENT_ROOT / "groups"
 TEMPLATES_DIR = CONTENT_ROOT / "templates"

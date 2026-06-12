@@ -8,7 +8,10 @@ import json
 import os
 import errno
 import re
+import signal
 import shutil
+import socket
+import subprocess
 import sys
 import threading
 import time
@@ -42,6 +45,7 @@ from .utils import (
     ALL_HARNESS_DEFINITIONS,
     ALL_HARNESSES,
     AI_MGMT_HOME,
+    APP_VERSION,
     CONFIGURED_HARNESSES,
     CONTENT_ROOT,
     CONTENT_TYPES,
@@ -364,15 +368,108 @@ def browser_url(host: str, port: int) -> str:
     return f"http://{browser_host}:{port}/"
 
 
-def web_server_responding(host: str, port: int, timeout: float = 0.5) -> bool:
-    request = urllib.request.Request(browser_url(host, port), method="GET")
+def app_version_url(host: str, port: int) -> str:
+    return urllib.parse.urljoin(browser_url(host, port), "api/app-version")
+
+
+def is_ai_management_response(headers: Any) -> bool:
+    server = ""
     try:
-        with urllib.request.urlopen(request, timeout=timeout):
-            return True
-    except urllib.error.HTTPError:
-        return True
-    except (OSError, TimeoutError, urllib.error.URLError):
+        server = str(headers.get("Server") or "")
+    except AttributeError:
         return False
+    return server.startswith("AIManagementWeb/")
+
+
+def running_ai_management_server(host: str, port: int, timeout: float = 0.5) -> tuple[bool, str | None]:
+    request = urllib.request.Request(app_version_url(host, port), method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            data = json.loads(response.read().decode("utf-8"))
+            return is_ai_management_response(response.headers), str(data.get("version") or "") or None
+    except urllib.error.HTTPError as exc:
+        return is_ai_management_response(exc.headers), None
+    except (OSError, TimeoutError, urllib.error.URLError, json.JSONDecodeError):
+        return False, None
+
+
+def running_server_version(host: str, port: int, timeout: float = 0.5) -> str | None:
+    is_wdm_server, version = running_ai_management_server(host, port, timeout)
+    return version if is_wdm_server else None
+
+
+def web_server_responding(host: str, port: int, timeout: float = 0.5) -> bool:
+    return running_server_version(host, port, timeout) == APP_VERSION
+
+
+def port_accepts_connections(host: str, port: int, timeout: float = 0.5) -> bool:
+    connect_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
+    try:
+        with socket.create_connection((connect_host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def port_listener_pids(port: int) -> list[int]:
+    try:
+        result = subprocess.run(
+            ["lsof", "-ti", f"TCP:{port}", "-sTCP:LISTEN"],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except OSError:
+        return []
+    pids = []
+    for line in result.stdout.splitlines():
+        try:
+            pids.append(int(line.strip()))
+        except ValueError:
+            continue
+    return sorted(set(pids))
+
+
+def stop_stale_ai_management_server(host: str, port: int, timeout: float = 3.0) -> bool:
+    is_wdm_server, version = running_ai_management_server(host, port)
+    if version == APP_VERSION:
+        return True
+    if not is_wdm_server and not port_accepts_connections(host, port):
+        return True
+    if not is_wdm_server:
+        return False
+
+    pids = port_listener_pids(port)
+    if not pids:
+        return False
+    version_label = version or "unknown version"
+    print(f"Stopping older AI Management web UI ({version_label}) on {browser_url(host, port)}")
+    for pid in pids:
+        if pid == os.getpid():
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not port_accepts_connections(host, port, timeout=0.2):
+            return True
+        time.sleep(0.1)
+    for pid in pids:
+        if pid == os.getpid():
+            continue
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    deadline = time.time() + 1.0
+    while time.time() < deadline:
+        if not port_accepts_connections(host, port, timeout=0.2):
+            return True
+        time.sleep(0.1)
+    return False
 
 
 def run_web(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = False, reload: bool = False) -> int:
@@ -388,13 +485,13 @@ def run_web(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = Fals
         start_reload_watcher()
     else:
         os.environ.pop(RELOAD_ENV, None)
+    stop_stale_ai_management_server(host, port)
     try:
         server = ReloadableThreadingHTTPServer((host, port), ManagementHandler)
     except OSError as exc:
         if exc.errno == errno.EADDRINUSE:
-            print(f"AI Management web UI already running at {url}")
-            if open_browser:
-                webbrowser.open(url)
+            print(f"Port {host}:{port} is already in use by another process.")
+            print("Stop that process or choose a different port with --port.")
             return 0
         raise
     url = browser_url(host, server.server_port)
@@ -2695,6 +2792,8 @@ class ManagementHandler(BaseHTTPRequestHandler):
                 )
             elif path == "/api/harness-paths":
                 self.json({"harnesses": web_harness_paths(), "targets": ALL_HARNESSES})
+            elif path == "/api/app-version":
+                self.json({"version": APP_VERSION})
             elif path == "/api/reload-token":
                 self.json({"token": reload_token()})
             elif path == "/api/browse-dirs":

@@ -36,12 +36,18 @@ class WebFiltersProjectsAndRenderingTests(TempWDMTestCase):
 
     def test_run_web_opens_existing_server_without_rebinding_port(self) -> None:
         class FakeResponse:
+            headers = {"Server": "AIManagementWeb/1.0 Python/3.14.5"}
+
             def __enter__(self):
                 return self
 
             def __exit__(self, exc_type, exc, traceback):
                 return False
 
+            def read(self):
+                return json.dumps({"version": self_web.APP_VERSION}).encode("utf-8")
+
+        self_web = self.web
         opened: list[str] = []
         server_calls: list[object] = []
         original_urlopen = self.web.urllib.request.urlopen
@@ -68,16 +74,18 @@ class WebFiltersProjectsAndRenderingTests(TempWDMTestCase):
             self.web.ReloadableThreadingHTTPServer = original_server
             self.web.ensure_source_root = original_ensure
 
-    def test_run_web_opens_existing_server_when_bind_reports_port_in_use(self) -> None:
+    def test_run_web_reports_stale_or_unknown_server_when_bind_reports_port_in_use(self) -> None:
         opened: list[str] = []
         original_probe = self.web.web_server_responding
         original_open = self.web.webbrowser.open
         original_server = self.web.ReloadableThreadingHTTPServer
         original_ensure = self.web.ensure_source_root
+        original_stop = self.web.stop_stale_ai_management_server
         try:
             self.web.web_server_responding = lambda host, port: False
             self.web.webbrowser.open = lambda url: opened.append(url)
             self.web.ensure_source_root = lambda: None
+            self.web.stop_stale_ai_management_server = lambda host, port: False
 
             def busy_server(*args, **kwargs):
                 raise OSError(self.web.errno.EADDRINUSE, "Address already in use")
@@ -89,13 +97,78 @@ class WebFiltersProjectsAndRenderingTests(TempWDMTestCase):
                 result = self.web.run_web(host="127.0.0.1", port=8765, open_browser=True)
 
             self.assertEqual(0, result)
-            self.assertIn("already running at http://127.0.0.1:8765/", output.getvalue())
-            self.assertEqual(["http://127.0.0.1:8765/"], opened)
+            self.assertIn("Port 127.0.0.1:8765 is already in use by another process", output.getvalue())
+            self.assertEqual([], opened)
         finally:
             self.web.web_server_responding = original_probe
             self.web.webbrowser.open = original_open
             self.web.ReloadableThreadingHTTPServer = original_server
             self.web.ensure_source_root = original_ensure
+            self.web.stop_stale_ai_management_server = original_stop
+
+    def test_run_web_stops_stale_ai_management_server_and_starts_new_server(self) -> None:
+        events: list[str] = []
+        opened: list[str] = []
+        original_probe = self.web.web_server_responding
+        original_open = self.web.webbrowser.open
+        original_server = self.web.ReloadableThreadingHTTPServer
+        original_ensure = self.web.ensure_source_root
+        original_stop = self.web.stop_stale_ai_management_server
+        try:
+            self.web.web_server_responding = lambda host, port: False
+            self.web.webbrowser.open = lambda url: opened.append(url)
+            self.web.ensure_source_root = lambda: None
+            self.web.stop_stale_ai_management_server = lambda host, port: events.append(f"stop:{host}:{port}") or True
+
+            class FakeServer:
+                server_port = 8765
+
+                def __init__(self, *args, **kwargs):
+                    events.append("bind")
+
+                def serve_forever(self):
+                    events.append("serve")
+
+                def server_close(self):
+                    events.append("close")
+
+            self.web.ReloadableThreadingHTTPServer = FakeServer
+
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                result = self.web.run_web(host="127.0.0.1", port=8765, open_browser=True)
+
+            self.assertEqual(0, result)
+            self.assertEqual(["stop:127.0.0.1:8765", "bind", "serve", "close"], events)
+            self.assertIn("AI Management web UI running at http://127.0.0.1:8765/", output.getvalue())
+            self.assertEqual([], opened)
+        finally:
+            self.web.web_server_responding = original_probe
+            self.web.webbrowser.open = original_open
+            self.web.ReloadableThreadingHTTPServer = original_server
+            self.web.ensure_source_root = original_ensure
+            self.web.stop_stale_ai_management_server = original_stop
+
+    def test_legacy_ai_management_server_without_version_endpoint_is_detected(self) -> None:
+        original_urlopen = self.web.urllib.request.urlopen
+        try:
+            def raise_legacy_404(request, timeout=0):
+                raise self.web.urllib.error.HTTPError(
+                    url="http://127.0.0.1:8765/api/app-version",
+                    code=404,
+                    msg="Not Found",
+                    hdrs={"Server": "AIManagementWeb/1.0 Python/3.14.5"},
+                    fp=None,
+                )
+
+            self.web.urllib.request.urlopen = raise_legacy_404
+
+            is_wdm_server, version = self.web.running_ai_management_server("127.0.0.1", 8765)
+
+            self.assertTrue(is_wdm_server)
+            self.assertIsNone(version)
+        finally:
+            self.web.urllib.request.urlopen = original_urlopen
 
     def test_install_counts_global_and_project_markers(self) -> None:
         self.write_agent("alpha")
