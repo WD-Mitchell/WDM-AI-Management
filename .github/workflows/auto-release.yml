@@ -111,21 +111,10 @@ jobs:
             exit 1
           fi
 
-      - name: Create GitHub App token
-        if: steps.versions.outputs.should_release == 'true'
-        id: app-token
-        uses: actions/create-github-app-token@v3
-        with:
-          client-id: ${{ vars.WDM_DEPLOY_APP_CLIENT_ID }}
-          private-key: ${{ secrets.WDM_DEPLOY_APP_PRIVATE_KEY }}
-          owner: WD-Mitchell
-          repositories: WDM-AI-Management
-          permission-contents: write
-
       - name: Create GitHub release
         if: steps.versions.outputs.should_release == 'true'
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.versions.outputs.tag }}
           VERSION: ${{ steps.versions.outputs.package_version }}
         run: |
@@ -133,6 +122,15 @@ jobs:
             --target "$GITHUB_SHA" \
             --title "WDM AI Management ${VERSION}" \
             --notes "Release ${VERSION} of WDM AI Management."
+
+      - name: Dispatch package publishing
+        if: steps.versions.outputs.should_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.versions.outputs.tag }}
+        run: |
+          gh workflow run "Publish npm" --ref "$TAG" -f ref="$TAG"
+          gh workflow run "Update Homebrew Tap" --ref "$TAG" -f tag="$TAG"
 
       - name: Skip release
         if: steps.versions.outputs.should_release != 'true'
