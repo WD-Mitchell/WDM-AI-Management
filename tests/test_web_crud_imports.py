@@ -329,6 +329,18 @@ class WebCrudImportAndPreviewTests(TempWDMTestCase):
         self.assertIn("&quot;b&quot;: 1", json_preview)
         self.assertIn("iframe", html_preview)
 
+    def test_validate_item_for_harness_reports_success_and_failure(self) -> None:
+        self.write_agent("valid-codex", body="## Mission\nUse **markdown**.\n")
+        valid = self.web.validation_result("agents", "valid-codex", "codex")
+        self.assertTrue(valid["ok"])
+        self.assertEqual("codex", valid["harness"])
+
+        self.write_agent("invalid-codex", description="", body="## Mission\nNo description.\n")
+        invalid = self.web.validation_result("agents", "invalid-codex", "codex")
+        self.assertFalse(invalid["ok"])
+        self.assertIn("description", invalid["error"])
+        self.assertIn("failed validation", self.web.render_validation_notice(invalid))
+
     def test_post_routes_save_import_duplicate_delete_and_harness_toggle(self) -> None:
         status, _, headers = self.post_form(
             self.web,

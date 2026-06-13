@@ -34,7 +34,9 @@ from .build import (
     RULE_SCHEMAS,
     SKILL_SCHEMAS,
     WORKFLOW_SCHEMAS,
+    build_codex_mcp_toml,
     build_codex_agent_toml,
+    build_mcp_entry,
     build_md_file,
     load_defaults,
     parse_frontmatter,
@@ -67,6 +69,7 @@ EDITABLE_TYPES = {"agents", "skills", "rules", "workflows", "hooks", "mcp", "gro
 LIST_TYPES = ["agents", "skills", "mcp", "rules", "workflows", "hooks", "harnesses", "templates", "groups"]
 EDITOR_VIEWS = {"form", "file"}
 PREVIEW_TYPES = {"agents", "skills", "rules", "workflows", "mcp"}
+VALIDATION_TYPES = PREVIEW_TYPES
 FIELD_ORDER = [
     "name",
     "description",
@@ -2415,6 +2418,136 @@ def rendered_preview_external_item(content_type: str, harness: str, raw_path: st
 </div>"""
 
 
+def validate_mcp_item_for_harness(name: str, path: Path, raw: str, harness: str) -> str:
+    if path.suffix == ".md" or raw.startswith("---"):
+        fields, _ = parse_frontmatter(raw)
+        if not fields:
+            raise ValueError("MCP Markdown sources must define YAML frontmatter.")
+    elif path.suffix in {".yaml", ".yml"}:
+        fields = yaml.safe_load(raw) if raw.strip() else {}
+        if not isinstance(fields, dict):
+            raise ValueError("YAML MCP source must be a mapping.")
+    elif path.suffix == ".json":
+        data = json.loads(raw) if raw.strip() else {}
+        if not isinstance(data, dict):
+            raise ValueError("JSON MCP source must be an object.")
+        if harness == "codex":
+            return build_codex_mcp_toml(name, data)
+        return json.dumps(data, indent=2)
+    else:
+        raise ValueError(f"Unsupported MCP source extension: {path.suffix or '(none)'}")
+
+    entry = build_mcp_entry(fields, harness)
+    if entry is None:
+        raise ValueError(f"{preview_harness_label(harness)} does not support this MCP source.")
+    final_name = str(fields.get("name") or name)
+    if harness == "codex":
+        return build_codex_mcp_toml(final_name, entry)
+    return json.dumps(entry, indent=2)
+
+
+def validate_item_for_harness(content_type: str, name: str, harness: str) -> dict[str, Any]:
+    if content_type not in VALIDATION_TYPES:
+        raise ValueError("Validation is available for agents, skills, rules, workflows, and MCP servers.")
+    if harness not in ALL_HARNESSES:
+        raise ValueError("Choose a supported harness.")
+    path, raw, fields, body = read_item(content_type, name)
+    defaults = load_defaults(DEFAULTS_FILE) if DEFAULTS_FILE.exists() else {}
+    rendered = ""
+    if content_type == "agents":
+        if harness == "codex":
+            rendered = build_codex_agent_toml(fields, body, defaults=defaults, source_name=str(path)) or ""
+        else:
+            rendered = build_md_file(fields, body, harness, AGENT_SCHEMAS.get(harness, []), defaults=defaults, content_type="agents") or ""
+    elif content_type == "skills":
+        rendered = build_md_file(fields, body, harness, SKILL_SCHEMAS.get(harness, []), defaults=defaults, content_type="skills") or ""
+    elif content_type == "rules":
+        rendered = build_md_file(fields, body, harness, RULE_SCHEMAS.get(harness, []), defaults=defaults, content_type="rules") or ""
+    elif content_type == "workflows":
+        rendered = build_md_file(fields, body, harness, WORKFLOW_SCHEMAS.get(harness, []), defaults=defaults, content_type="workflows") or ""
+    elif content_type == "mcp":
+        rendered = validate_mcp_item_for_harness(name, path, raw, harness)
+    if not str(rendered or "").strip():
+        raise ValueError(f"{name} does not produce output for {preview_harness_label(harness)}.")
+    return {
+        "ok": True,
+        "type": content_type,
+        "name": name,
+        "harness": harness,
+        "harness_label": preview_harness_label(harness),
+        "path": str(path),
+        "bytes": len(rendered.encode("utf-8")),
+    }
+
+
+def validation_result(content_type: str, name: str, harness: str) -> dict[str, Any]:
+    try:
+        return validate_item_for_harness(content_type, name, harness)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "type": content_type,
+            "name": name,
+            "harness": harness,
+            "harness_label": preview_harness_label(harness) if harness in ALL_HARNESSES else harness,
+            "error": str(exc),
+        }
+
+
+def validate_all_items_for_harness(content_type: str, harness: str) -> list[dict[str, Any]]:
+    if content_type not in VALIDATION_TYPES:
+        raise ValueError("Validation is available for agents, skills, rules, workflows, and MCP servers.")
+    if harness not in ALL_HARNESSES:
+        raise ValueError("Choose a supported harness.")
+    return [validation_result(content_type, name, harness) for name in list_names(content_type)]
+
+
+def render_validation_notice(result: dict[str, Any]) -> str:
+    status = "ok" if result.get("ok") else "error"
+    harness = str(result.get("harness_label") or result.get("harness") or "harness")
+    name = str(result.get("name") or "item")
+    if result.get("ok"):
+        message = f"{name} validates for {harness}."
+        detail = f"{int(result.get('bytes') or 0)} bytes rendered."
+    else:
+        message = f"{name} failed validation for {harness}."
+        detail = str(result.get("error") or "Unknown validation error.")
+    return f"""<div class="validation-result {status}" data-validation-result role="status" tabindex="-1">
+  <strong>{escape(message)}</strong>
+  <span>{escape(detail)}</span>
+</div>"""
+
+
+def render_validation_report(content_type: str, harness: str, results: list[dict[str, Any]], scope: str = "global") -> str:
+    ok_count = sum(1 for result in results if result.get("ok"))
+    total = len(results)
+    rows = []
+    for result in results:
+        status = "Pass" if result.get("ok") else "Fail"
+        detail = f"{int(result.get('bytes') or 0)} bytes rendered." if result.get("ok") else str(result.get("error") or "")
+        rows.append(
+            f"""<tr class="{escape('ok' if result.get('ok') else 'error')}">
+  <td>{escape(str(result.get("name") or ""))}</td>
+  <td>{status}</td>
+  <td>{escape(detail)}</td>
+</tr>"""
+        )
+    label = preview_harness_label(harness) if harness in ALL_HARNESSES else harness
+    return f"""<section class="validation-report">
+  <div class="editor-head">
+    <div>
+      <h2>Validate {escape(content_type.title())}</h2>
+      <p>{ok_count} of {total} passed for {escape(label)}.</p>
+    </div>
+    <a class="button secondary" href="/?type={urllib.parse.quote(content_type)}&scope={urllib.parse.quote(scope)}">Back</a>
+  </div>
+  <table>
+    <thead><tr><th>Item</th><th>Status</th><th>Details</th></tr></thead>
+    <tbody>{"".join(rows) if rows else '<tr><td colspan="3">No items found.</td></tr>'}</tbody>
+  </table>
+</section>"""
+
+
 def render_external_preview_harness_selector(content_type: str, name: str, scope: str, selected_harness: str, path: str) -> str:
     options = []
     for harness in ALL_HARNESSES:
@@ -2990,6 +3123,24 @@ class ManagementHandler(BaseHTTPRequestHandler):
                     self.json({"ok": True})
                 except Exception as exc:
                     self.json({"ok": False, "error": str(exc)})
+            elif path == "/validate-item":
+                result = validation_result(
+                    form.get("type", "agents"),
+                    form.get("name", ""),
+                    form.get("harness", ""),
+                )
+                status = HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_REQUEST
+                self.json({"ok": bool(result.get("ok")), "html": render_validation_notice(result), **result}, status)
+            elif path == "/validate-all":
+                content_type = form.get("type", "agents")
+                harness = form.get("harness", "")
+                scope = form.get("scope", "global")
+                try:
+                    results = validate_all_items_for_harness(content_type, harness)
+                    report = render_validation_report(content_type, harness, results, scope)
+                    self.html(page(content_type, None, scope, report))
+                except Exception as exc:
+                    self.html(render_error(str(exc)), HTTPStatus.BAD_REQUEST)
             elif path == "/modal/convert-view":
                 self.html(render_editor_from_form_state(form))
             elif path == "/templates/from-item":
@@ -3466,6 +3617,7 @@ def page(content_type: str, selected_name: str | None, scope: str, body: str, fi
     function renderPreviewActions(type, name, scope) {{
       const view = 'form';
       return '<div class="modal-action-bar">' +
+        '<button type="button" class="secondary" data-preview-validate data-validate-type="' + escapeAttr(type) + '" data-validate-name="' + escapeAttr(name) + '" data-validate-scope="' + escapeAttr(scope || 'global') + '">Validate</button>' +
         '<button type="button" class="secondary" data-preview-edit data-edit-type="' + escapeAttr(type) + '" data-edit-name="' + escapeAttr(name) + '" data-edit-scope="' + escapeAttr(scope || 'global') + '" data-edit-view="' + escapeAttr(view) + '">Edit</button>' +
         '<button type="button" class="secondary" data-preview-duplicate data-duplicate-type="' + escapeAttr(type) + '" data-duplicate-name="' + escapeAttr(name) + '" data-duplicate-scope="' + escapeAttr(scope || 'global') + '">Duplicate</button>' +
         '<button type="button" class="danger secondary" data-preview-delete data-delete-type="' + escapeAttr(type) + '" data-delete-name="' + escapeAttr(name) + '" data-delete-scope="' + escapeAttr(scope || 'global') + '">Delete</button>' +
@@ -3857,6 +4009,38 @@ def page(content_type: str, selected_name: str | None, scope: str, body: str, fi
         await loadSelectionEdit(type, payload.name, scope || currentScope(), 'form');
       }} catch (error) {{
         showModalClientError(error && error.message ? error.message : 'Unable to duplicate item.');
+      }}
+    }}
+    function selectedPreviewHarness() {{
+      const select = document.querySelector('[data-preview-harness-select]');
+      return select ? select.value : defaultTarget();
+    }}
+    async function validatePreviewItem(button) {{
+      const data = new URLSearchParams();
+      data.set('type', button.dataset.validateType || 'agents');
+      data.set('name', button.dataset.validateName || '');
+      data.set('scope', button.dataset.validateScope || currentScope());
+      data.set('harness', selectedPreviewHarness());
+      button.disabled = true;
+      try {{
+        const res = await fetch('/validate-item', {{
+          method: 'post',
+          headers: {{ 'Accept': 'application/json', 'X-Requested-With': 'fetch' }},
+          body: data,
+        }});
+        const payload = await res.json().catch(() => ({{ ok: false, html: '', error: 'Validation failed.' }}));
+        const body = document.querySelector('[data-content-modal-body]');
+        body?.querySelectorAll('[data-validation-result]').forEach(node => node.remove());
+        if (payload.html && body) {{
+          body.insertAdjacentHTML('afterbegin', payload.html);
+          const notice = body.querySelector('[data-validation-result]');
+          if (notice) notice.focus?.();
+        }}
+        if (!res.ok && !payload.html) throw new Error(payload.error || 'Validation failed.');
+      }} catch (error) {{
+        showModalClientError(error && error.message ? error.message : 'Unable to validate item.');
+      }} finally {{
+        button.disabled = false;
       }}
     }}
     function readFileAsText(file) {{
@@ -5893,6 +6077,12 @@ def page(content_type: str, selected_name: str | None, scope: str, body: str, fi
         duplicateManagedItem(previewDuplicate.dataset.duplicateType, previewDuplicate.dataset.duplicateName, previewDuplicate.dataset.duplicateScope);
         return;
       }}
+      const previewValidate = event.target.closest('[data-preview-validate]');
+      if (previewValidate) {{
+        event.preventDefault();
+        validatePreviewItem(previewValidate);
+        return;
+      }}
       const modalViewToggle = event.target.closest('[data-content-modal] .view-toggle a');
       if (modalViewToggle) {{
         event.preventDefault();
@@ -7152,11 +7342,13 @@ def render_selection_actions(content_type: str, scope: str, singular: str, new_v
       </label>"""
         )
     bulk_form = render_bulk_update_form(content_type, scope, filters, current_page) if content_type in CONTENT_TYPES else ""
+    validate_form = render_validate_all_form(content_type, scope, singular) if content_type in VALIDATION_TYPES else ""
     return f"""<div class="selection-bottom-actions">
   <div class="selection-action-buttons">
     <a class="button" href="{create_href}">Create {escape(singular.title())}</a>
     <button type="button" class="button secondary" data-open-import-modal data-import-type="{escape(content_type)}" data-import-scope="{escape(scope)}">Import</button>
   </div>
+  {validate_form}
   {bulk_form}
   <form class="source-mode-form" method="get" action="/">
     <input type="hidden" name="type" value="{escape(content_type)}">
@@ -7168,6 +7360,33 @@ def render_selection_actions(content_type: str, scope: str, singular: str, new_v
     </fieldset>
   </form>
 </div>"""
+
+
+def render_validate_all_form(content_type: str, scope: str, singular: str) -> str:
+    options = []
+    default_harness = ALL_HARNESSES[0] if ALL_HARNESSES else ""
+    type_label = "MCP Servers" if content_type == "mcp" else f"{singular.title()}s"
+    for harness in ALL_HARNESSES:
+        label = preview_harness_label(harness)
+        checked = " checked" if harness == default_harness else ""
+        options.append(
+            f"""<label class="split-option">
+      <input type="radio" name="harness" value="{escape(harness)}"{checked}>
+      <span>{escape(label)}</span>
+    </label>"""
+        )
+    return f"""<form class="split-validate-form" action="/validate-all" method="post">
+    <input type="hidden" name="type" value="{escape(content_type)}">
+    <input type="hidden" name="scope" value="{escape(scope)}" data-scope-hidden>
+    <button type="submit" class="split-main">Validate all {escape(type_label)}</button>
+    <details class="split-dropdown" data-harness-menu>
+      <summary aria-label="Choose validation harness"><span class="multiselect-caret" aria-hidden="true"></span></summary>
+      <fieldset class="split-menu-options">
+        <legend class="sr-only">Validation harness</legend>
+        {"".join(options)}
+      </fieldset>
+    </details>
+  </form>"""
 
 
 def render_bulk_update_form(content_type: str, scope: str, filters: dict[str, Any], current_page: int = 1) -> str:
@@ -9681,6 +9900,73 @@ p { margin: 4px 0 0; color: var(--muted); }
   top: calc(100% + 8px);
   bottom: auto;
 }
+.split-validate-form {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+  flex: 0 0 auto;
+}
+.split-validate-form .split-main {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.split-dropdown {
+  position: relative;
+}
+.split-dropdown summary {
+  width: 38px;
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-left: 0;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: var(--surface-raised);
+  color: var(--text);
+  cursor: pointer;
+  list-style: none;
+}
+.split-dropdown summary::-webkit-details-marker {
+  display: none;
+}
+.split-dropdown[open] summary {
+  border-color: color-mix(in srgb, var(--primary) 55%, var(--line));
+}
+.split-menu-options {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 50;
+  width: min(260px, calc(100vw - 32px));
+  max-height: 280px;
+  margin: 0;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+  box-shadow: var(--shadow);
+}
+.split-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 7px 8px;
+  border-radius: 6px;
+  color: var(--text);
+}
+.split-option:hover {
+  background: color-mix(in srgb, var(--primary) 8%, var(--surface));
+}
+.split-option input {
+  width: auto;
+}
+.split-option span {
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: none;
+}
 .bulk-select-visible {
   min-width: 96px;
 }
@@ -11388,6 +11674,31 @@ button.secondary:hover,
   border: 1px solid var(--line);
   border-radius: 6px;
 }
+.validation-result {
+  display: grid;
+  gap: 4px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.validation-result strong {
+  color: var(--text);
+  font-size: 13px;
+}
+.validation-result span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.validation-result.ok {
+  border-color: color-mix(in srgb, var(--success) 34%, var(--line));
+  background: color-mix(in srgb, var(--success) 8%, var(--surface));
+}
+.validation-result.error {
+  border-color: color-mix(in srgb, var(--danger) 34%, var(--line));
+  background: color-mix(in srgb, var(--danger) 8%, var(--surface));
+}
 .modal-action-bar {
   display: flex;
   justify-content: flex-end;
@@ -11500,6 +11811,38 @@ button.danger:focus-visible,
   border-bottom: 1px solid var(--line);
   background: var(--surface);
   font-size: 13px;
+}
+.validation-report {
+  width: min(100%, 1120px);
+  padding: 28px;
+}
+.validation-report table {
+  width: 100%;
+  margin-top: 16px;
+  border-collapse: collapse;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.validation-report th,
+.validation-report td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+.validation-report th {
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+}
+.validation-report tr.ok td:nth-child(2) {
+  color: var(--success);
+  font-weight: 700;
+}
+.validation-report tr.error td:nth-child(2) {
+  color: var(--danger);
+  font-weight: 700;
 }
 .rendered-markdown {
   padding: 14px;

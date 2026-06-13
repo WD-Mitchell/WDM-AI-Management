@@ -258,10 +258,19 @@ class WebHarnessUpdateTests(unittest.TestCase):
         self.assertIn('action="/bulk-install"', html)
         self.assertIn("Select visible", html)
         self.assertIn("Update selected", html)
+        self.assertIn('action="/validate-all"', html)
+        self.assertIn("Validate all Agents", html)
+        self.assertIn("split-dropdown", html)
 
         paged = self.web.render_bulk_update_form("agents", self.project_scope, {"sort": "name-desc"}, 3)
         self.assertIn("page=3", paged)
         self.assertIn("sort=name-desc", paged)
+
+    def test_preview_actions_include_validate_button(self) -> None:
+        html = self.web.page("agents", None, self.project_scope, "")
+
+        self.assertIn("data-preview-validate", html)
+        self.assertIn("/validate-item", html)
 
     def test_unknown_item_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "Unknown agents item"):
