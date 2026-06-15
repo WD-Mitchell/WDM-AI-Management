@@ -121,6 +121,58 @@ class WebCrudImportAndPreviewTests(TempWDMTestCase):
         self.assertTrue(harness["default_enabled"])
         self.assertEqual({"agents": {"body": "instructions"}}, harness["field_mappings"])
 
+    def test_group_form_renders_sections_and_saves_checked_memberships(self) -> None:
+        self.write_agent("alpha", "Alpha agent")
+        self.write_agent("beta", "Beta agent")
+        self.write_skill("docs", "Docs skill")
+        self.write_group("core", "# Core tools\n\n[agents]\nalpha\nmissing-agent\n\n[skills]\ndocs\n")
+
+        rendered = self.web.render_editor("groups", "core", set(), "global", "form")
+        self.assertIn('data-group-type-section data-group-type="agents"', rendered)
+        self.assertIn('name="group_items_agents" value="alpha" checked', rendered)
+        self.assertIn("missing-agent", rendered)
+        self.assertIn("group-item-badge", rendered)
+        self.assertIn('data-group-type-filter', rendered)
+        self.assertIn('data-group-item-filter', rendered)
+
+        saved = self.web.save_item(
+            {
+                "type": "groups",
+                "name": "platform",
+                "editor_view": "form",
+                "group_description": "Platform group",
+                "group_items_agents": ["alpha", "beta"],
+                "group_items_skills": ["docs"],
+            }
+        )
+
+        self.assertEqual("platform", saved)
+        raw = (self.content_root / "groups" / "platform.group").read_text(encoding="utf-8")
+        self.assertEqual("# Platform group\n\n[agents]\nalpha\nbeta\n\n[skills]\ndocs\n", raw)
+
+    def test_group_form_post_preserves_repeated_checkbox_values(self) -> None:
+        self.write_agent("alpha")
+        self.write_agent("beta")
+
+        status, _, headers = self.post_form(
+            self.web,
+            "/save",
+            [
+                ("type", "groups"),
+                ("name", "route-group"),
+                ("editor_view", "form"),
+                ("scope", "global"),
+                ("group_description", "Route group"),
+                ("group_items_agents", "alpha"),
+                ("group_items_agents", "beta"),
+            ],
+        )
+
+        self.assertEqual(303, status)
+        self.assertIn("type=groups", urllib.parse.unquote(headers["location"]))
+        raw = (self.content_root / "groups" / "route-group.group").read_text(encoding="utf-8")
+        self.assertIn("[agents]\nalpha\nbeta\n", raw)
+
     def test_validation_rejects_invalid_form_backed_files(self) -> None:
         with self.assertRaisesRegex(ValueError, "name must be valid YAML"):
             self.web.validate_form_state({"type": "mcp", "name": "bad", "original_suffix": ".json", "target_view": "form", "field_name": "[not-json"})

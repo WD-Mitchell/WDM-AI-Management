@@ -102,6 +102,69 @@ class WebFiltersProjectsAndRenderingTests(TempWDMTestCase):
         self.assertNotIn("brew update", html)
         self.assertNotIn("<code>", html)
 
+    def test_source_settings_page_and_form_persist_storage_choices(self) -> None:
+        html = self.web.render_settings_page()
+        self.assertIn("Settings", html)
+        self.assertIn("Source folder", html)
+        self.assertIn("Git repository URL", html)
+        self.assertIn("Coming soon", html)
+        self.assertIn("AI_MANAGEMENT_HOME", html)
+
+        local_path = self.base / "custom-wdm"
+        saved = self.web.save_source_settings_form({"source_mode": "local", "local_path": str(local_path)})
+        self.assertEqual("local", saved["mode"])
+        self.assertEqual(str(local_path), saved["local_path"])
+
+        repo = self.web.save_source_settings_form(
+            {
+                "source_mode": "repo",
+                "local_path": str(local_path),
+                "repo_url": "https://github.com/example/private-wdm.git",
+                "repo_token": "secret-token",
+            }
+        )
+        self.assertEqual("repo", repo["mode"])
+        self.assertEqual("secret-token", repo["repo_token"])
+        self.assertIn("private-wdm", repo["repo_checkout_path"])
+
+        retained = self.web.save_source_settings_form(
+            {
+                "source_mode": "repo",
+                "local_path": str(local_path),
+                "repo_url": "https://github.com/example/private-wdm.git",
+                "repo_token_existing": "1",
+            }
+        )
+        self.assertEqual("secret-token", retained["repo_token"])
+
+        cleared = self.web.save_source_settings_form(
+            {
+                "source_mode": "repo",
+                "local_path": str(local_path),
+                "repo_url": "https://github.com/example/private-wdm.git",
+                "repo_token_existing": "1",
+                "repo_token_clear": "1",
+            }
+        )
+        self.assertEqual("", cleared["repo_token"])
+
+        with self.assertRaisesRegex(ValueError, "Git repository URL"):
+            self.web.save_source_settings_form({"source_mode": "repo", "local_path": str(local_path), "repo_url": ""})
+
+    def test_settings_post_route_saves_and_redirects(self) -> None:
+        status, _, headers = self.post_form(
+            self.web,
+            "/settings",
+            {
+                "source_mode": "local",
+                "local_path": str(self.base / "route-wdm"),
+            },
+        )
+
+        self.assertEqual(303, status)
+        self.assertEqual("/settings?saved=1", headers["location"])
+        self.assertEqual(str(self.base / "route-wdm"), self.web.load_source_settings()["local_path"])
+
     def test_run_web_opens_existing_server_without_rebinding_port(self) -> None:
         class FakeResponse:
             headers = {"Server": "AIManagementWeb/1.0 Python/3.14.5"}
@@ -390,6 +453,46 @@ field_sections:
         self.assertEqual("#!/bin/sh", parsed["shebang"])
         self.assertEqual("Runs checks\nBefore commit", parsed["description"])
         self.assertEqual("echo ok\n", parsed["script"])
+
+        hook_dir = self.content_root / "hooks" / "core"
+        hook_dir.mkdir(parents=True, exist_ok=True)
+        (hook_dir / "node-test-pre-push").write_text("#!/usr/bin/env bash\n# Run Node tests before push\n\necho ok\n", encoding="utf-8")
+        summary = self.web.item_summary("hooks", "node-test-pre-push")
+        self.assertEqual("Run Node tests before push", summary["description"])
+        card = self.web.render_selection_card(
+            "hooks",
+            summary,
+            set(),
+            "global",
+            1,
+            self.web.normalize_selection_filters({}, []),
+        )
+        self.assertIn("Run Node tests before push", card)
+        self.assertNotIn("/hooks/core/node-test-pre-push", card)
+
+        original_which = self.web.shutil.which
+        try:
+            self.web.shutil.which = lambda command: f"/usr/bin/{command}" if command in {"bash", "node"} else None
+            interpreters = self.web.detected_hook_interpreters()
+            self.assertEqual(["bash", "node"], [item["command"] for item in interpreters])
+            detected_select = self.web.render_hook_interpreter_select("#!/usr/bin/env node")
+            self.assertIn('<option value="#!/usr/bin/env node" selected>', detected_select)
+            self.assertIn("data-hook-interpreter-custom hidden", detected_select)
+            custom_select = self.web.render_hook_interpreter_select("#!/opt/custom/tool")
+            self.assertIn('<option value="__custom__" selected>Custom</option>', custom_select)
+            self.assertIn('value="#!/opt/custom/tool"', custom_select)
+        finally:
+            self.web.shutil.which = original_which
+
+        custom_hook = self.web.serialize_hook_script(
+            {
+                "hook_shebang_choice": "__custom__",
+                "hook_shebang_custom": "#!/opt/custom/tool",
+                "hook_description": "Custom runtime",
+                "hook_script": "echo ok",
+            }
+        )
+        self.assertEqual("#!/opt/custom/tool\n# Custom runtime\necho ok\n", custom_hook)
 
         defaults = {"codex": {"default": {"model": "gpt-5", "model_reasoning_effort": "low"}}}
         self.assertEqual("low", self.web.default_reasoning_value("codex", "model_reasoning_effort", defaults))

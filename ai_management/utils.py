@@ -23,7 +23,86 @@ SYNC_TEMPLATE_FILE = ".ai-management"
 PACKAGE_DIR = Path(__file__).resolve().parent
 SCRIPT_DIR = PACKAGE_DIR.parent
 REPO_ROOT = SCRIPT_DIR
-AI_MGMT_HOME = Path(os.environ.get("AI_MANAGEMENT_HOME", str(Path.home() / ".wdm"))).expanduser()
+APP_CONFIG_DIR = Path(os.environ.get("AI_MANAGEMENT_CONFIG_DIR", str(Path.home() / ".config" / "wdm-ai-management"))).expanduser()
+SOURCE_SETTINGS_FILE = APP_CONFIG_DIR / "source.json"
+DEFAULT_AI_MGMT_HOME = Path.home() / ".wdm"
+
+
+def default_source_settings() -> dict:
+    return {
+        "mode": "local",
+        "local_path": str(DEFAULT_AI_MGMT_HOME),
+        "repo_url": "",
+        "repo_token": "",
+        "repo_checkout_path": "",
+        "server_url": "",
+    }
+
+
+def load_source_settings() -> dict:
+    defaults = default_source_settings()
+    try:
+        data = json.loads(SOURCE_SETTINGS_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return defaults
+    if not isinstance(data, dict):
+        return defaults
+    settings = {**defaults}
+    for key in defaults:
+        value = data.get(key)
+        if isinstance(value, str):
+            settings[key] = value
+    if settings["mode"] not in {"local", "repo"}:
+        settings["mode"] = "local"
+    return settings
+
+
+def save_source_settings(settings: dict) -> dict:
+    current = load_source_settings()
+    next_settings = {**current}
+    for key in default_source_settings():
+        value = settings.get(key)
+        if isinstance(value, str):
+            next_settings[key] = value.strip()
+    if next_settings["mode"] not in {"local", "repo"}:
+        next_settings["mode"] = "local"
+    if not next_settings["local_path"]:
+        next_settings["local_path"] = str(DEFAULT_AI_MGMT_HOME)
+    if next_settings["repo_url"] and not next_settings["repo_checkout_path"]:
+        next_settings["repo_checkout_path"] = str(repo_checkout_path(next_settings["repo_url"]))
+    APP_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    SOURCE_SETTINGS_FILE.write_text(json.dumps(next_settings, indent=2, ensure_ascii=True).rstrip() + "\n", encoding="utf-8")
+    return next_settings
+
+
+def source_settings_env_override() -> bool:
+    return bool(os.environ.get("AI_MANAGEMENT_HOME"))
+
+
+def repo_checkout_path(repo_url: str) -> Path:
+    import hashlib
+    import re
+
+    normalized = repo_url.strip().rstrip("/") or "repository"
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "-", normalized.split("/")[-1]).strip("-._")
+    if stem.endswith(".git"):
+        stem = stem[:-4]
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
+    return APP_CONFIG_DIR / "repositories" / f"{stem or 'repository'}-{digest}"
+
+
+def configured_ai_management_home() -> Path:
+    env_home = os.environ.get("AI_MANAGEMENT_HOME")
+    if env_home:
+        return Path(env_home).expanduser()
+    settings = load_source_settings()
+    if settings.get("mode") == "repo" and settings.get("repo_url"):
+        checkout = settings.get("repo_checkout_path") or str(repo_checkout_path(settings.get("repo_url", "")))
+        return Path(checkout).expanduser()
+    return Path(settings.get("local_path") or str(DEFAULT_AI_MGMT_HOME)).expanduser()
+
+
+AI_MGMT_HOME = configured_ai_management_home()
 INSTALLED_DIR = AI_MGMT_HOME / "installed"
 BACKUP_DIR = AI_MGMT_HOME / "backups"
 GITHUB_REPO = os.environ.get("AI_MANAGEMENT_REPO", "")

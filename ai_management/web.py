@@ -47,6 +47,7 @@ from .sync import sync_command
 from .utils import (
     ALL_HARNESS_DEFINITIONS,
     ALL_HARNESSES,
+    APP_CONFIG_DIR,
     AI_MGMT_HOME,
     APP_VERSION,
     CONFIGURED_HARNESSES,
@@ -55,10 +56,15 @@ from .utils import (
     DEFAULTS_FILE,
     HARNESS_DEFINITIONS,
     REPO_ROOT,
+    SOURCE_SETTINGS_FILE,
     TEMPLATES_DIR,
     content_source_dir,
     harness_detected,
     harness_enabled,
+    load_source_settings,
+    repo_checkout_path,
+    save_source_settings,
+    source_settings_env_override,
 )
 from . import build as build_module
 from . import sync as sync_module
@@ -174,6 +180,23 @@ BOOLEAN_FIELD_NAMES = {
     "background",
 }
 HOOK_TEMPLATE_FIELDS = ("hook_shebang", "hook_description", "hook_script")
+HOOK_INTERPRETER_CANDIDATES = (
+    ("bash", "#!/usr/bin/env bash", "Bash"),
+    ("sh", "#!/bin/sh", "POSIX sh"),
+    ("zsh", "#!/usr/bin/env zsh", "Zsh"),
+    ("python3", "#!/usr/bin/env python3", "Python 3"),
+    ("python", "#!/usr/bin/env python", "Python"),
+    ("node", "#!/usr/bin/env node", "Node.js"),
+    ("tsx", "#!/usr/bin/env tsx", "TypeScript tsx"),
+    ("bun", "#!/usr/bin/env bun", "Bun"),
+    ("deno", "#!/usr/bin/env deno", "Deno"),
+    ("ruby", "#!/usr/bin/env ruby", "Ruby"),
+    ("perl", "#!/usr/bin/env perl", "Perl"),
+    ("php", "#!/usr/bin/env php", "PHP"),
+    ("pwsh", "#!/usr/bin/env pwsh", "PowerShell"),
+    ("fish", "#!/usr/bin/env fish", "Fish"),
+)
+HOOK_CUSTOM_INTERPRETER_VALUE = "__custom__"
 FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
 <rect width="64" height="64" rx="14" fill="#1d4ed8"/>
 <path d="M16 42l8-20h6l8 20h-6l-1.5-4.5h-7L22 42h-6zm9-9h4l-2-6-2 6zm17 9V22h6v20h-6z" fill="#eff6ff"/>
@@ -935,6 +958,70 @@ def template_field_sections_from_form(form: dict[str, Any]) -> dict[str, dict[st
     return normalize_template_field_sections(loaded)
 
 
+def normalized_form_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        values = value
+    elif value is None:
+        values = []
+    else:
+        values = [value]
+    return [str(item).strip() for item in values if str(item).strip()]
+
+
+def group_definition_from_raw(raw: str, name: str = "") -> dict[str, Any]:
+    description = ""
+    sections: dict[str, list[str]] = {}
+    current = ""
+    for raw_line in raw.splitlines():
+        stripped = raw_line.strip()
+        if not description and stripped.startswith("#"):
+            description = stripped.lstrip("# ").strip()
+        line = raw_line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            current = line[1:-1].strip().lower()
+            sections.setdefault(current, [])
+            continue
+        if current:
+            sections.setdefault(current, []).append(line)
+    return {
+        "name": name,
+        "description": description,
+        "sections": {content_type: sections.get(content_type, []) for content_type in CONTENT_TYPES},
+    }
+
+
+def group_definition_from_form(form: dict[str, Any]) -> dict[str, Any]:
+    sections = {
+        content_type: sorted(dict.fromkeys(normalized_form_list(form.get(f"group_items_{content_type}"))))
+        for content_type in CONTENT_TYPES
+    }
+    return {
+        "name": str(form.get("name") or "").strip(),
+        "description": str(form.get("group_description") or "").strip(),
+        "sections": sections,
+    }
+
+
+def dump_group_definition(definition: dict[str, Any]) -> str:
+    lines: list[str] = []
+    description = str(definition.get("description") or "").strip()
+    if description:
+        lines.append(f"# {description}")
+        lines.append("")
+    sections = definition.get("sections") if isinstance(definition.get("sections"), dict) else {}
+    for content_type in CONTENT_TYPES:
+        values = normalized_form_list(sections.get(content_type) if isinstance(sections, dict) else [])
+        if not values:
+            continue
+        if lines and lines[-1] != "":
+            lines.append("")
+        lines.append(f"[{content_type}]")
+        lines.extend(values)
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def template_definition_from_form(form: dict[str, Any]) -> dict[str, Any]:
     name = str(form.get("name") or form.get("original_name") or "new-template").strip()
     target_type = str(form.get("template_type") or "agents").strip()
@@ -980,6 +1067,162 @@ def template_definition_from_form(form: dict[str, Any]) -> dict[str, Any]:
 
 def dump_template_definition(definition: dict[str, Any]) -> str:
     return yaml.safe_dump(definition, sort_keys=False, allow_unicode=False).strip() + "\n"
+
+
+def save_source_settings_form(form: dict[str, Any]) -> dict[str, str]:
+    current = load_source_settings()
+    mode = str(form.get("source_mode") or "local").strip()
+    if mode == "server":
+        raise ValueError("Server-backed source storage is coming soon.")
+    if mode not in {"local", "repo"}:
+        raise ValueError("Source storage mode must be local or repo.")
+    local_path = str(form.get("local_path") if "local_path" in form else current.get("local_path") or "").strip() or str(Path.home() / ".wdm")
+    repo_url = str(form.get("repo_url") if "repo_url" in form else current.get("repo_url") or "").strip()
+    if mode == "repo" and not repo_url:
+        raise ValueError("Repo source mode needs a Git repository URL.")
+    repo_token = str(form.get("repo_token") if "repo_token" in form else current.get("repo_token") or "").strip()
+    if not repo_token and (form.get("repo_token_existing") == "1" or "repo_token" not in form) and form.get("repo_token_clear") != "1":
+        repo_token = str(current.get("repo_token") or "")
+    if form.get("repo_token_clear") == "1":
+        repo_token = ""
+    repo_checkout = str(form.get("repo_checkout_path") if "repo_checkout_path" in form else current.get("repo_checkout_path") or "").strip()
+    if repo_url and not repo_checkout:
+        repo_checkout = str(repo_checkout_path(repo_url))
+    return save_source_settings(
+        {
+            "mode": mode,
+            "local_path": local_path,
+            "repo_url": repo_url,
+            "repo_token": repo_token,
+            "repo_checkout_path": repo_checkout,
+            "server_url": str(form.get("server_url") or "").strip(),
+        }
+    )
+
+
+def source_mode_checked(settings: dict[str, str], mode: str) -> str:
+    return " checked" if settings.get("mode") == mode else ""
+
+
+def render_settings_page(saved: bool = False, error: str = "") -> str:
+    settings = load_source_settings()
+    mode = settings.get("mode") or "local"
+    if mode not in {"local", "repo"}:
+        mode = "local"
+    env_override = source_settings_env_override()
+    repo_token_saved = bool(settings.get("repo_token"))
+    repo_checkout = settings.get("repo_checkout_path") or (
+        str(repo_checkout_path(settings.get("repo_url", ""))) if settings.get("repo_url") else ""
+    )
+    saved_banner = (
+        '<div class="settings-banner success">Settings saved. Restart the web UI for source-root changes to take effect.</div>'
+        if saved
+        else ""
+    )
+    error_banner = f'<div class="settings-banner error">{escape(error)}</div>' if error else ""
+    override_banner = (
+        f"""<div class="settings-banner warning">
+  <strong>Environment override active.</strong>
+  <span><code>AI_MANAGEMENT_HOME</code> is set, so this process is using <code>{escape(AI_MGMT_HOME)}</code> until it is restarted without that override.</span>
+</div>"""
+        if env_override
+        else ""
+    )
+    token_note = "Saved token present. Leave blank to keep it." if repo_token_saved else "Optional token for private repositories."
+    return page(
+        "settings",
+        "",
+        "global",
+        f"""<section class="settings-page">
+  <div class="settings-head">
+    <div>
+      <h2>Settings</h2>
+      <p>Choose where AI Management reads and writes the source-of-truth files.</p>
+    </div>
+  </div>
+  {saved_banner}
+  {error_banner}
+  {override_banner}
+  <form class="settings-form" action="/settings" method="post">
+    <section class="settings-panel">
+      <h3>Storage</h3>
+      <div class="source-choice-grid">
+        <label class="source-choice-card">
+          <input type="radio" name="source_mode" value="local"{' checked' if mode == 'local' else ''} data-source-settings-mode>
+          <span>
+            <strong>Local</strong>
+            <small>Use a local folder as the managed <code>.wdm</code> source tree.</small>
+          </span>
+        </label>
+        <label class="source-choice-card">
+          <input type="radio" name="source_mode" value="repo"{' checked' if mode == 'repo' else ''} data-source-settings-mode>
+          <span>
+            <strong>Repo</strong>
+            <small>Store source files in a Git-backed checkout configured from a repository URL.</small>
+          </span>
+        </label>
+        <label class="source-choice-card disabled">
+          <input type="radio" name="source_mode" value="server" disabled>
+          <span>
+            <strong>Server</strong>
+            <small>Coming soon.</small>
+          </span>
+        </label>
+      </div>
+    </section>
+    <section class="settings-panel" data-source-settings-panel="local">
+      <h3>Local Source</h3>
+      <div class="settings-grid">
+        <label class="wide">
+          <span>Source folder</span>
+          <input name="local_path" value="{escape(settings.get('local_path') or str(Path.home() / '.wdm'))}" placeholder="~/.wdm">
+        </label>
+      </div>
+    </section>
+    <section class="settings-panel" data-source-settings-panel="repo">
+      <h3>Repository Source</h3>
+      <div class="settings-grid">
+        <label class="wide">
+          <span>Git repository URL</span>
+          <input name="repo_url" value="{escape(settings.get('repo_url') or '')}" placeholder="https://github.com/org/ai-management-source.git">
+        </label>
+        <label class="wide">
+          <span>Access token</span>
+          <input name="repo_token" type="password" autocomplete="new-password" placeholder="{escape(token_note)}">
+        </label>
+        <input type="hidden" name="repo_token_existing" value="{'1' if repo_token_saved else '0'}">
+        <label class="checkbox-field wide">
+          <input type="checkbox" name="repo_token_clear" value="1"{' disabled' if not repo_token_saved else ''}>
+          <span>Clear saved repository token</span>
+        </label>
+        <label class="wide">
+          <span>Local checkout path</span>
+          <input name="repo_checkout_path" value="{escape(repo_checkout)}" placeholder="{escape(str(APP_CONFIG_DIR / 'repositories'))}">
+        </label>
+      </div>
+    </section>
+    <section class="settings-panel disabled" data-source-settings-panel="server">
+      <h3>Server Source</h3>
+      <div class="settings-grid">
+        <label class="wide">
+          <span>Server URL</span>
+          <input name="server_url" value="{escape(settings.get('server_url') or '')}" placeholder="Coming soon" disabled>
+        </label>
+      </div>
+    </section>
+    <section class="settings-panel">
+      <h3>Runtime</h3>
+      <dl class="settings-runtime">
+        <div><dt>Current source root</dt><dd><code>{escape(CONTENT_ROOT)}</code></dd></div>
+        <div><dt>Settings file</dt><dd><code>{escape(SOURCE_SETTINGS_FILE)}</code></dd></div>
+      </dl>
+    </section>
+    <div class="settings-actions">
+      <button type="submit">Save settings</button>
+    </div>
+  </form>
+</section>""",
+    )
 
 
 def load_projects() -> list[dict[str, str]]:
@@ -1168,6 +1411,9 @@ def item_summary(content_type: str, name: str) -> dict[str, str]:
     except OSError:
         return {"name": name, "description": "", "path": ""}
     description = str(fields.get("description") or "").strip()
+    if not description and content_type == "hooks":
+        parsed_hook = parse_hook_script(raw)
+        description = parsed_hook["description"] or parsed_hook["shebang"]
     if not description and content_type in {"groups", "templates"}:
         for line in raw.splitlines():
             if line.strip().startswith("#"):
@@ -1521,8 +1767,52 @@ def parse_hook_script(raw: str) -> dict[str, str]:
     }
 
 
+def detected_hook_interpreters() -> list[dict[str, str]]:
+    options: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for command, shebang, label in HOOK_INTERPRETER_CANDIDATES:
+        if shutil.which(command) is None:
+            continue
+        if shebang in seen:
+            continue
+        seen.add(shebang)
+        options.append({"command": command, "shebang": shebang, "label": label})
+    return options
+
+
+def render_hook_interpreter_select(current: str) -> str:
+    current = (current or "#!/usr/bin/env bash").strip()
+    detected = detected_hook_interpreters()
+    known = {option["shebang"] for option in detected}
+    use_custom = current not in known
+    option_rows = []
+    for option in detected:
+        selected = " selected" if option["shebang"] == current else ""
+        option_rows.append(
+            f'<option value="{escape(option["shebang"])}"{selected}>{escape(option["label"])} ({escape(option["shebang"])})</option>'
+        )
+    if not option_rows:
+        use_custom = True
+        option_rows.append('<option value="" disabled>No interpreters detected</option>')
+    custom_selected = " selected" if use_custom else ""
+    custom_value = current if use_custom else ""
+    custom_hidden = "" if use_custom else " hidden"
+    return f"""<div class="hook-interpreter-control" data-hook-interpreter-control>
+      <select name="hook_shebang_choice" data-hook-interpreter-select>
+        {"".join(option_rows)}
+        <option value="{HOOK_CUSTOM_INTERPRETER_VALUE}"{custom_selected}>Custom</option>
+      </select>
+      <input name="hook_shebang_custom" value="{escape(custom_value)}" placeholder="#!/usr/bin/env bash" data-hook-interpreter-custom{custom_hidden}>
+    </div>"""
+
+
 def serialize_hook_script(form: dict[str, Any]) -> str:
-    shebang = str(form.get("hook_shebang") or "#!/usr/bin/env bash").strip()
+    shebang_choice = str(form.get("hook_shebang_choice") or "").strip()
+    shebang_custom = str(form.get("hook_shebang_custom") or "").strip()
+    if shebang_choice == HOOK_CUSTOM_INTERPRETER_VALUE:
+        shebang = shebang_custom or "#!/usr/bin/env bash"
+    else:
+        shebang = shebang_choice or str(form.get("hook_shebang") or "#!/usr/bin/env bash").strip()
     if not shebang.startswith("#!"):
         shebang = "#!" + shebang.lstrip("# ")
     description = str(form.get("hook_description") or "").strip()
@@ -1536,8 +1826,14 @@ def serialize_hook_script(form: dict[str, Any]) -> str:
 
 
 def hook_template_fields_from_form(form: dict[str, Any]) -> dict[str, str]:
+    shebang_choice = str(form.get("hook_shebang_choice") or "").strip()
+    shebang_custom = str(form.get("hook_shebang_custom") or "").strip()
+    if shebang_choice == HOOK_CUSTOM_INTERPRETER_VALUE:
+        shebang = shebang_custom or "#!/usr/bin/env bash"
+    else:
+        shebang = shebang_choice or str(form.get("hook_shebang") or "#!/usr/bin/env bash").strip()
     return {
-        "hook_shebang": str(form.get("hook_shebang") or "#!/usr/bin/env bash").strip(),
+        "hook_shebang": shebang,
         "hook_description": str(form.get("hook_description") or "").strip(),
         "hook_script": str(form.get("hook_script") or "").rstrip(),
     }
@@ -1709,6 +2005,9 @@ def raw_from_form_state(form: dict[str, Any]) -> tuple[str, Path]:
         definition = template_definition_from_form(form)
         definition["name"] = name
         return dump_template_definition(definition), template_definition_path(name)
+    if content_type == "groups":
+        definition = group_definition_from_form(form)
+        return dump_group_definition(definition), content_path("groups", name)
     if content_type == "harnesses":
         definition = harness_definition_from_form(form)
         return json.dumps(definition, indent=2, ensure_ascii=True).rstrip() + "\n", content_path("harnesses", name)
@@ -1789,7 +2088,9 @@ def save_item(form: dict[str, str]) -> str:
     if content_type == "groups":
         path = CONTENT_ROOT / "groups" / f"{name}.group"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(form.get("raw", "").rstrip() + "\n", encoding="utf-8")
+        definition = group_definition_from_form(form)
+        definition["name"] = name
+        path.write_text(dump_group_definition(definition), encoding="utf-8")
         maybe_remove_renamed(content_type, original_name, name)
         return name
 
@@ -3046,6 +3347,8 @@ class ManagementHandler(BaseHTTPRequestHandler):
                         },
                     )
                 )
+            elif path == "/settings":
+                self.html(render_settings_page(first(query, "saved", "") == "1"))
             elif path == "/preview":
                 content_type = first(query, "type", "agents")
                 name = first(query, "name")
@@ -3113,7 +3416,12 @@ class ManagementHandler(BaseHTTPRequestHandler):
         body = self.rfile.read(length).decode("utf-8")
         parsed = urllib.parse.parse_qs(body, keep_blank_values=True)
         form = {
-            key: values if key.startswith("field_") and (len(values) > 1 or key.startswith("field_agent_")) else values[-1]
+            key: values
+            if (
+                key.startswith("group_items_")
+                or (key.startswith("field_") and (len(values) > 1 or key.startswith("field_agent_")))
+            )
+            else values[-1]
             for key, values in parsed.items()
         }
         try:
@@ -3158,6 +3466,12 @@ class ManagementHandler(BaseHTTPRequestHandler):
                     self.html(render_template_field_preset_editor(target_type, fields, form.get("scope", "global")))
                 except Exception as exc:
                     self.html(render_error(str(exc)), HTTPStatus.BAD_REQUEST)
+            elif path == "/settings":
+                try:
+                    save_source_settings_form(form)
+                    self.redirect("/settings?saved=1")
+                except Exception as exc:
+                    self.html(render_settings_page(error=str(exc)), HTTPStatus.BAD_REQUEST)
             elif path == "/save":
                 name = save_item(form)
                 view = form.get("editor_view", "form")
@@ -3289,11 +3603,14 @@ class ManagementHandler(BaseHTTPRequestHandler):
                 scope = f"project:{project['root']}"
                 name = form.get("name")
                 name_param = "" if name is None else f"&name={urllib.parse.quote(name)}"
-                target = (
-                    f"/?type={urllib.parse.quote(form.get('type', 'agents'))}"
-                    f"{name_param}"
-                    f"&scope={urllib.parse.quote(scope)}"
-                )
+                if form.get("type") == "settings":
+                    target = "/settings"
+                else:
+                    target = (
+                        f"/?type={urllib.parse.quote(form.get('type', 'agents'))}"
+                        f"{name_param}"
+                        f"&scope={urllib.parse.quote(scope)}"
+                    )
                 self.redirect(target)
             else:
                 self.error(HTTPStatus.NOT_FOUND, "Not found")
@@ -3637,7 +3954,9 @@ def page(content_type: str, selected_name: str | None, scope: str, body: str, fi
       const res = await fetch(url);
       parts.body.innerHTML = await res.text();
       resetBodySectionEditors(parts.body);
+      resetTemplateSectionEditors(parts.body);
       resetTemplateFieldSectionEditors(parts.body);
+      updateGroupEditorFilters(parts.body);
       parts.actions.innerHTML = renderEditActions(type, name, scope || 'global', view || 'form');
       setEditorCleanSnapshot(parts.body);
       updateReactivePaths();
@@ -3732,6 +4051,14 @@ def page(content_type: str, selected_name: str | None, scope: str, body: str, fi
       const modal = document.querySelector('[data-content-modal]');
       if (!modal) return;
       modal.dataset.dirty = isEditorFormDirty() ? 'true' : 'false';
+    }}
+    function updateHookInterpreterControl(root = document) {{
+      root.querySelectorAll?.('[data-hook-interpreter-control]').forEach(control => {{
+        const select = control.querySelector('[data-hook-interpreter-select]');
+        const custom = control.querySelector('[data-hook-interpreter-custom]');
+        if (!select || !custom) return;
+        custom.hidden = select.value !== '{HOOK_CUSTOM_INTERPRETER_VALUE}';
+      }});
     }}
     function confirmDiscardChanges() {{
       return !isEditorFormDirty() || window.confirm('Discard unsaved changes?');
@@ -4152,6 +4479,7 @@ def page(content_type: str, selected_name: str | None, scope: str, body: str, fi
         resetBodySectionEditors(root);
         resetTemplateSectionEditors(root);
         resetTemplateFieldSectionEditors(root);
+        updateGroupEditorFilters(root);
         updateReactivePaths();
         const nextForm = root.querySelector('form.edit-form');
         if (nextForm) {{
@@ -5495,6 +5823,40 @@ def page(content_type: str, selected_name: str | None, scope: str, body: str, fi
       window.clearTimeout(searchRefreshTimer);
       searchRefreshTimer = window.setTimeout(() => refreshSelectionResults(form, sourceInput), delay);
     }}
+    function updateGroupEditorFilters(root = document) {{
+      const editor = root.querySelector?.('[data-group-section-editor]') || (root.matches?.('[data-group-section-editor]') ? root : null);
+      if (!editor) return;
+      const form = editor.closest('form.edit-form');
+      const typeFilter = form?.querySelector('[data-group-type-filter]');
+      const itemFilter = form?.querySelector('[data-group-item-filter]');
+      const selectedType = typeFilter ? typeFilter.value : 'all';
+      const query = (itemFilter ? itemFilter.value : '').trim().toLowerCase();
+      editor.querySelectorAll('[data-group-type-section]').forEach(section => {{
+        const matchesType = selectedType === 'all' || section.dataset.groupType === selectedType;
+        let visibleRows = 0;
+        section.querySelectorAll('[data-group-item-row]').forEach(row => {{
+          const haystack = ((row.dataset.groupItemName || '') + ' ' + (row.dataset.groupItemDescription || '')).toLowerCase();
+          const visible = matchesType && (!query || haystack.includes(query));
+          row.hidden = !visible;
+          if (visible) visibleRows += 1;
+        }});
+        const empty = section.querySelector('[data-group-filter-empty]');
+        if (empty) empty.hidden = visibleRows !== 0;
+        section.hidden = !matchesType;
+      }});
+    }}
+    function updateSourceSettingsPanels(root = document) {{
+      const checked = root.querySelector?.('[data-source-settings-mode]:checked') || document.querySelector('[data-source-settings-mode]:checked');
+      const mode = checked ? checked.value : 'local';
+      document.querySelectorAll('[data-source-settings-panel]').forEach(panel => {{
+        const active = panel.dataset.sourceSettingsPanel === mode;
+        panel.dataset.inactive = active ? 'false' : 'true';
+        panel.querySelectorAll('input, textarea, select').forEach(input => {{
+          if (input.name === 'server_url') return;
+          input.disabled = !active;
+        }});
+      }});
+    }}
     let dynamicPageSizeTimer = null;
     function computeDynamicPageSize() {{
       const grid = document.querySelector('.selection-grid');
@@ -6238,6 +6600,8 @@ def page(content_type: str, selected_name: str | None, scope: str, body: str, fi
     document.addEventListener('input', event => {{
       const filterSearch = event.target.closest('[data-filter-search]');
       if (filterSearch) submitSearchWhenIdle(filterSearch.form, filterSearch, 500);
+      const groupItemFilter = event.target.closest('[data-group-item-filter]');
+      if (groupItemFilter) updateGroupEditorFilters(groupItemFilter.closest('form.edit-form') || document);
       const bodyEditor = event.target.closest('[data-body-section-editor]');
       if (bodyEditor) {{
         const section = event.target.closest('[data-body-section]');
@@ -6307,12 +6671,28 @@ def page(content_type: str, selected_name: str | None, scope: str, body: str, fi
         setBodyTemplate(editor, bodyTemplateSelect.value, false);
         return;
       }}
+      const hookInterpreterSelect = event.target.closest('[data-hook-interpreter-select]');
+      if (hookInterpreterSelect) {{
+        updateHookInterpreterControl(hookInterpreterSelect.closest('[data-hook-interpreter-control]') || document);
+        updateContentModalDirtyState();
+        return;
+      }}
       const templateTypeSelect = event.target.closest('[data-template-type-select]');
       if (templateTypeSelect) {{
         refreshTemplateFieldPresetEditor(templateTypeSelect);
         maybeRefreshTemplateSectionsForType(templateTypeSelect.closest('form.edit-form'), false);
         maybeRefreshTemplateFieldSectionsForType(templateTypeSelect.closest('form.edit-form'), false);
         updateContentModalDirtyState();
+        return;
+      }}
+      const groupTypeFilter = event.target.closest('[data-group-type-filter]');
+      if (groupTypeFilter) {{
+        updateGroupEditorFilters(groupTypeFilter.closest('form.edit-form') || document);
+        return;
+      }}
+      const sourceSettingsMode = event.target.closest('[data-source-settings-mode]');
+      if (sourceSettingsMode) {{
+        updateSourceSettingsPanels(document);
         return;
       }}
       const autoFilter = event.target.closest('[data-filter-auto-submit]');
@@ -6346,6 +6726,8 @@ def page(content_type: str, selected_name: str | None, scope: str, body: str, fi
       resetBodySectionEditors(document);
       resetTemplateSectionEditors(document);
       resetTemplateFieldSectionEditors(document);
+      updateGroupEditorFilters(document);
+      updateSourceSettingsPanels(document);
       updateReactivePaths();
       updateBulkSelectionState();
       applyDynamicPageSize(50);
@@ -6589,7 +6971,9 @@ def render_type_submenu(active: str, scope: str) -> str:
         cls = "active" if content_type == active else ""
         return f'<a class="{cls}" href="/?type={content_type}&scope={urllib.parse.quote(scope)}">{content_type.title()}</a>'
 
-    return f'<nav class="type-tabs" aria-label="Content menu">{"".join(link(item) for item in items)}</nav>'
+    settings_cls = "active" if active == "settings" else ""
+    settings_link = f'<a class="{settings_cls}" href="/settings">Settings</a>'
+    return f'<nav class="type-tabs" aria-label="Content menu">{"".join(link(item) for item in items)}{settings_link}</nav>'
 
 
 def render_sync_controls(scope: str) -> str:
@@ -6737,12 +7121,15 @@ def render_project_nav(content_type: str, selected_name: str | None, scope: str)
 
     def project_link(choice: dict[str, str]) -> str:
         active = " active" if choice["value"] == scope else ""
-        name_param = "" if selected_name is None else f"&name={urllib.parse.quote(selected_name)}"
-        href = (
-            f"/?type={urllib.parse.quote(content_type)}"
-            f"{name_param}"
-            f"&scope={urllib.parse.quote(choice['value'])}"
-        )
+        if content_type == "settings":
+            href = "/settings"
+        else:
+            name_param = "" if selected_name is None else f"&name={urllib.parse.quote(selected_name)}"
+            href = (
+                f"/?type={urllib.parse.quote(content_type)}"
+                f"{name_param}"
+                f"&scope={urllib.parse.quote(choice['value'])}"
+            )
         return f"""<a class="project-entry{active}" href="{href}" data-project-entry data-scope="{escape(choice['value'])}" data-root="{escape(choice['root'])}" data-kind="{escape(choice['kind'])}">
   <span>{escape(choice['label'])}</span>
   <small>{escape(choice['root'])}</small>
@@ -7031,7 +7418,7 @@ def render_selection_page(
     external_items = []
     if show_external:
         external_items = sort_external_items(filter_external_items(external_item_candidates(content_type, scope), normalized_filters), normalized_filters["sort"])
-    new_view = "&view=file" if content_type in {"groups"} else ""
+    new_view = ""
     entries: list[tuple[str, dict[str, Any]]] = []
     if show_external:
         entries.extend(("external", item) for item in external_items)
@@ -7853,7 +8240,8 @@ def render_editor(content_type: str, name: str | None, installed: set[str], scop
     if content_type == "hooks":
         return render_hook_editor(name, raw, path, scope, name in installed)
     if content_type in {"groups"}:
-        return render_file_editor(content_type, name, raw, path, scope, name in installed)
+        definition = group_definition_from_raw(raw, name)
+        return render_group_editor(name, definition, raw, path, scope, name in installed)
     if content_type == "mcp" and path.suffix in {".json", ".yaml", ".yml"}:
         return render_mapping_editor(content_type, name, fields, raw, path, name in installed, scope)
     return render_markdown_editor(content_type, name, fields, body, raw, path, name in installed, scope)
@@ -7870,8 +8258,15 @@ def render_editor_from_form_state(form: dict[str, Any]) -> str:
     scope = form.get("scope", "global")
     installed = set(load_installed_type(content_type)) if content_type in CONTENT_TYPES else set()
     raw, path = raw_from_form_state(form)
-    if target_view == "file" or content_type in {"groups"}:
+    if target_view == "file":
         return render_file_editor(content_type, name, raw, path, scope, name in installed)
+    if content_type == "groups":
+        if form.get("editor_view") == "file":
+            definition = group_definition_from_raw(raw, name)
+        else:
+            definition = group_definition_from_form(form)
+            definition["name"] = name
+        return render_group_editor(name, definition, raw, path, scope, name in installed)
     if content_type == "templates":
         definition = template_definition_from_raw(raw, name)
         return render_template_editor(name, definition, raw, path, scope, name in installed)
@@ -7899,7 +8294,12 @@ def render_editor_from_form_state(form: dict[str, Any]) -> str:
 
 def render_new_editor(content_type: str, scope: str, view: str = "form", template_type: str = "agents") -> str:
     if content_type == "groups":
-        return render_file_editor(content_type, "", "# New item\n\n[agents]\n", content_path(content_type, "new"), scope, False)
+        definition = {"name": "", "description": "New item", "sections": {content_type: [] for content_type in CONTENT_TYPES}}
+        raw = dump_group_definition(definition)
+        path = content_path(content_type, "new")
+        if view == "file":
+            return render_file_editor(content_type, "", raw, path, scope, False)
+        return render_group_editor("", definition, raw, path, scope, False)
     if content_type == "templates":
         if template_type not in TEMPLATE_TARGET_TYPES:
             template_type = "agents"
@@ -8730,6 +9130,96 @@ def heading_level_options(selected: Any) -> str:
     )
 
 
+def group_type_options() -> str:
+    options = ['<option value="all">All types</option>']
+    for content_type in CONTENT_TYPES:
+        label = TEMPLATE_TYPE_LABELS.get(content_type, content_type.title())
+        options.append(f'<option value="{escape(content_type)}">{escape(label)}</option>')
+    return "".join(options)
+
+
+def render_group_type_section(content_type: str, selected_values: list[str]) -> str:
+    selected = set(normalized_form_list(selected_values))
+    wildcard_selected = "*" in selected
+    available_names = list_names(content_type)
+    explicit_selected = [item for item in selected_values if item and item != "*"]
+    names = sorted(dict.fromkeys([*available_names, *explicit_selected]))
+    rows = []
+    for item_name in names:
+        summary = item_summary(content_type, item_name)
+        description = str(summary.get("description") or "").strip()
+        missing = item_name not in available_names
+        checked = " checked" if wildcard_selected or item_name in selected else ""
+        missing_badge = '<span class="group-item-badge">missing</span>' if missing else ""
+        rows.append(
+            f"""<label class="group-item-row" data-group-item-row data-group-item-name="{escape(item_name)}" data-group-item-description="{escape(description)}">
+  <input type="checkbox" name="group_items_{escape(content_type)}" value="{escape(item_name)}"{checked}>
+  <span class="group-item-text">
+    <span class="group-item-title">{escape(item_name)}{missing_badge}</span>
+    <small>{escape(description or "No description")}</small>
+  </span>
+</label>"""
+        )
+    selected_count = sum(1 for item in names if wildcard_selected or item in selected)
+    label = TEMPLATE_TYPE_LABELS.get(content_type, content_type.title())
+    body = "".join(rows) if rows else '<p class="empty group-empty">No items of this type yet.</p>'
+    return f"""<details class="group-type-section" data-group-type-section data-group-type="{escape(content_type)}" open>
+  <summary>
+    <span>{escape(label)}</span>
+    <small>{selected_count} selected / {len(names)} total</small>
+  </summary>
+  <div class="group-item-list">{body}<p class="empty group-filter-empty" data-group-filter-empty hidden>No matching items.</p></div>
+</details>"""
+
+
+def render_group_editor(
+    name: str,
+    definition: dict[str, Any],
+    raw: str,
+    path: Path,
+    scope: str,
+    installed: bool,
+) -> str:
+    current_name = name or str(definition.get("name") or "")
+    description = str(definition.get("description") or "")
+    sections = definition.get("sections") if isinstance(definition.get("sections"), dict) else {}
+    type_sections = "".join(
+        render_group_type_section(content_type, normalized_form_list(sections.get(content_type)))
+        for content_type in CONTENT_TYPES
+    )
+    return f"""<section class="editor group-structured-editor">
+  <span data-editor-type="groups"></span>
+  {render_editor_header("groups", current_name, path, scope, "form", installed)}
+  <form class="edit-form" action="/save" method="post">
+    <input type="hidden" name="type" value="groups">
+    <input type="hidden" name="original_name" value="{escape(current_name)}">
+    <input type="hidden" name="original_suffix" value="{escape(path.suffix)}">
+    <input type="hidden" name="scope" value="{escape(scope)}" data-scope-hidden>
+    <input type="hidden" name="editor_view" value="form">
+    <label>
+      <span>file name</span>
+      <input name="name" value="{escape(current_name)}" required data-name-input>
+    </label>
+    <label>
+      <span>Type filter</span>
+      <select data-group-type-filter>{group_type_options()}</select>
+    </label>
+    <label class="wide">
+      <span>Description</span>
+      <textarea name="group_description" rows="3">{escape_textarea(description)}</textarea>
+    </label>
+    <label class="wide">
+      <span>Filter items</span>
+      <input data-group-item-filter placeholder="Search names and descriptions">
+    </label>
+    <fieldset class="group-section-editor wide" data-group-section-editor>
+      <legend>Group contents</legend>
+      <div class="group-type-list">{type_sections}</div>
+    </fieldset>
+  </form>
+</section>"""
+
+
 def render_template_section_rows(sections: list[dict[str, Any]]) -> str:
     rows = []
     if not sections:
@@ -9174,7 +9664,7 @@ def render_hook_editor(name: str, raw: str, path: Path, scope: str, installed: b
 	    {render_body_template_controls("hooks", selected_template_name)}
 	    <label>
 	      <span>interpreter</span>
-      <input name="hook_shebang" value="{escape(parsed['shebang'])}" placeholder="#!/usr/bin/env bash">
+      {render_hook_interpreter_select(parsed['shebang'])}
     </label>
     <label class="wide">
       <span>Description comments</span>
@@ -10736,6 +11226,159 @@ button:disabled {
   opacity: 0.48;
   cursor: default;
 }
+.settings-page {
+  grid-column: 2 / -1;
+  min-width: 0;
+  min-height: calc(100vh - 49px);
+  padding: 20px;
+  overflow: auto;
+  background: var(--surface);
+}
+.settings-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.settings-head h2 {
+  margin: 0;
+  font-size: 22px;
+}
+.settings-head p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+.settings-form {
+  display: grid;
+  gap: 14px;
+}
+.settings-panel {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-raised);
+}
+.settings-panel[data-inactive="true"] {
+  opacity: 0.58;
+}
+.settings-panel.disabled {
+  background: var(--surface-2);
+  color: var(--muted);
+}
+.settings-panel h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 800;
+}
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(220px, 1fr));
+  gap: 12px;
+}
+.settings-grid .wide {
+  grid-column: 1 / -1;
+}
+.source-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.source-choice-card {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  cursor: pointer;
+}
+.source-choice-card:has(input:checked) {
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 7%, var(--surface));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary) 24%, transparent);
+}
+.source-choice-card.disabled {
+  cursor: default;
+  opacity: 0.58;
+}
+.source-choice-card input {
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+  accent-color: var(--primary);
+}
+.source-choice-card span {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.source-choice-card strong {
+  color: var(--text);
+  font-size: 13px;
+}
+.source-choice-card small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+.settings-banner {
+  display: grid;
+  gap: 3px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 12px;
+}
+.settings-banner.success {
+  border-color: color-mix(in srgb, var(--success) 36%, var(--line));
+  background: color-mix(in srgb, var(--success) 7%, var(--surface));
+}
+.settings-banner.warning {
+  border-color: color-mix(in srgb, var(--external) 42%, var(--line));
+  background: color-mix(in srgb, var(--external) 8%, var(--surface));
+}
+.settings-banner.error {
+  border-color: color-mix(in srgb, var(--danger) 42%, var(--line));
+  background: color-mix(in srgb, var(--danger) 7%, var(--surface));
+}
+.settings-runtime {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+.settings-runtime div {
+  display: grid;
+  grid-template-columns: 170px minmax(0, 1fr);
+  gap: 10px;
+}
+.settings-runtime dt {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+}
+.settings-runtime dd {
+  min-width: 0;
+  margin: 0;
+}
+.settings-runtime code,
+.settings-banner code,
+.source-choice-card code {
+  overflow-wrap: anywhere;
+}
+.settings-actions {
+  display: flex;
+  justify-content: flex-end;
+}
 .pagination-footer {
   display: grid;
   grid-template-columns: minmax(160px, 1fr) auto minmax(160px, 1fr);
@@ -10819,6 +11462,10 @@ button:disabled {
   color: var(--muted);
   font-size: 12px;
 }
+.hook-interpreter-control {
+  display: grid;
+  gap: 8px;
+}
 .harness-status-panel {
   display: flex;
   align-items: center;
@@ -10844,6 +11491,136 @@ button:disabled {
 }
 .harness-structured-editor .edit-form {
   grid-template-columns: 1fr;
+}
+.group-structured-editor .edit-form {
+  grid-template-columns: repeat(2, minmax(220px, 1fr));
+}
+.group-section-editor {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+}
+.group-section-editor legend {
+  padding: 0 5px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 800;
+}
+.group-type-list {
+  display: grid;
+  gap: 10px;
+}
+.group-type-section {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.group-type-section summary {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 42px;
+  padding: 10px 12px;
+  cursor: pointer;
+  list-style: none;
+}
+.group-type-section summary::-webkit-details-marker {
+  display: none;
+}
+.group-type-section summary::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: rotate(-45deg);
+  transition: transform 140ms ease;
+}
+.group-type-section[open] summary::before {
+  transform: rotate(45deg);
+}
+.group-type-section summary span {
+  flex: 1;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 800;
+}
+.group-type-section summary small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+.group-item-list {
+  display: grid;
+  gap: 0;
+  border-top: 1px solid var(--line);
+}
+.group-item-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  cursor: pointer;
+}
+.group-item-row:last-child {
+  border-bottom: 0;
+}
+.group-item-row:hover,
+.group-item-row:has(input:focus-visible) {
+  background: var(--surface-2);
+}
+.group-item-row input {
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+  accent-color: var(--primary);
+}
+.group-item-text {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.group-item-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 750;
+  overflow-wrap: anywhere;
+}
+.group-item-row small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.group-item-badge {
+  flex: 0 0 auto;
+  padding: 2px 5px;
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--line));
+  border-radius: 999px;
+  color: var(--danger);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+.group-empty,
+.group-filter-empty {
+  margin: 0;
+  padding: 12px;
 }
 .harness-form-section {
   display: grid;
@@ -12244,6 +13021,24 @@ button.danger:focus-visible,
   .mapping-field-remove { width: 100%; }
   .harness-form-grid,
   .harness-form-grid.compact { grid-template-columns: 1fr; }
+  .settings-page { grid-column: auto; padding: 14px; }
+  .settings-grid,
+  .source-choice-grid { grid-template-columns: 1fr; }
+  .settings-runtime div { grid-template-columns: 1fr; }
+  .settings-actions button { width: 100%; }
+  .group-structured-editor .edit-form { grid-template-columns: 1fr; }
+  .group-type-section summary {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .group-type-section summary::before {
+    position: absolute;
+    margin-top: 5px;
+  }
+  .group-type-section summary span,
+  .group-type-section summary small {
+    margin-left: 18px;
+  }
   .editor.full { grid-column: auto; }
 }
 """
