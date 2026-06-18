@@ -29,6 +29,7 @@ from typing import Any
 
 import yaml
 
+from .agent_variants import agent_variant_entry, load_agent_source, materialize_agent_variant
 from .build import (
     AGENT_SCHEMAS,
     RULE_SCHEMAS,
@@ -1367,6 +1368,19 @@ def list_names(content_type: str) -> list[str]:
 
 
 def read_item(content_type: str, name: str) -> tuple[Path, str, dict[str, Any], str]:
+    if content_type == "agents":
+        variant_entry = agent_variant_entry(content_source_dir("agents"), name)
+        if variant_entry:
+            source_path = Path(variant_entry["source_path"])
+            raw = source_path.read_text(encoding="utf-8") if source_path.exists() else ""
+            fields, body = load_agent_source(source_path)
+            variant_fields, variant_body = materialize_agent_variant(
+                fields,
+                body,
+                variant_entry["variant"],
+                str(variant_entry["base_name"]),
+            )
+            return source_path, raw, variant_fields, variant_body
     path = content_path(content_type, name)
     if content_type == "skills":
         path = path / "SKILL.md"
@@ -1406,6 +1420,7 @@ def read_item(content_type: str, name: str) -> tuple[Path, str, dict[str, Any], 
 
 
 def item_summary(content_type: str, name: str) -> dict[str, str]:
+    variant_entry = agent_variant_entry(content_source_dir("agents"), name) if content_type == "agents" else None
     try:
         path, raw, fields, body = read_item(content_type, name)
     except OSError:
@@ -1444,7 +1459,7 @@ def item_summary(content_type: str, name: str) -> dict[str, str]:
         modified_at = format_file_date(modified_ts)
     except OSError:
         pass
-    return {
+    summary = {
         "name": name,
         "description": description,
         "path": str(path),
@@ -1456,6 +1471,10 @@ def item_summary(content_type: str, name: str) -> dict[str, str]:
         "section_count": section_count,
         "field_count": field_count,
     }
+    if variant_entry:
+        summary["variant_base"] = str(variant_entry.get("base_name") or "")
+        summary["variant"] = "true"
+    return summary
 
 
 def format_file_date(timestamp: float) -> str:
@@ -7423,7 +7442,7 @@ def render_selection_page(
     if show_external:
         entries.extend(("external", item) for item in external_items)
     if show_managed:
-        entries.extend(("managed", item) for item in filtered)
+        entries.extend(managed_selection_entries(content_type, filtered, annotated, normalized_filters["sort"]))
     per_page = int(normalized_filters["per_page"])
     total_pages = max(1, (len(entries) + per_page - 1) // per_page)
     current_page = min(max(1, selection_page), total_pages)
@@ -7433,6 +7452,8 @@ def render_selection_page(
     for kind, item in entries[start:end]:
         if kind == "external":
             cards.append(render_external_card(content_type, item, scope, current_page, normalized_filters))
+        elif kind == "managed_agent_group":
+            cards.append(render_agent_variant_group(item, installed, scope, current_page, normalized_filters))
         else:
             cards.append(render_selection_card(content_type, item, installed, scope, current_page, normalized_filters))
     if source_mode == "external" and content_type == "agents":
@@ -7447,9 +7468,53 @@ def render_selection_page(
     return f"""<section class="selection-page">
   {actions}
   {summary}
-  <div class="selection-grid">{"".join(cards)}</div>
+  <div class="selection-grid{' agent-selection-grid' if content_type == 'agents' and show_managed else ''}">{"".join(cards)}</div>
   {pagination}
 </section>"""
+
+
+def managed_selection_entries(
+    content_type: str,
+    filtered: list[dict[str, Any]],
+    annotated: list[dict[str, Any]],
+    sort: str,
+) -> list[tuple[str, dict[str, Any]]]:
+    if content_type != "agents":
+        return [("managed", item) for item in filtered]
+
+    by_name = {str(item.get("name") or ""): item for item in annotated}
+    variants_by_base: dict[str, list[dict[str, Any]]] = {}
+    for item in annotated:
+        base_name = str(item.get("variant_base") or "")
+        if base_name:
+            variants_by_base.setdefault(base_name, []).append(item)
+
+    filtered_names = {str(item.get("name") or "") for item in filtered}
+    entries: list[tuple[str, dict[str, Any]]] = []
+    emitted_bases: set[str] = set()
+    for item in filtered:
+        name = str(item.get("name") or "")
+        base_name = str(item.get("variant_base") or "")
+        group_name = base_name or name
+        if group_name in emitted_bases:
+            continue
+        base_item = by_name.get(group_name)
+        if not base_item:
+            entries.append(("managed", item))
+            continue
+        variants = [
+            variant
+            for variant in variants_by_base.get(group_name, [])
+            if str(variant.get("name") or "") in filtered_names
+        ]
+        if variants:
+            variants = sort_selection_items(variants, sort)
+        if variants or variants_by_base.get(group_name):
+            entries.append(("managed_agent_group", {"base": base_item, "variants": variants}))
+        else:
+            entries.append(("managed", base_item))
+        emitted_bases.add(group_name)
+    return entries
 
 
 def normalize_selection_filters(filters: dict[str, str], group_names: list[str] | None = None) -> dict[str, Any]:
@@ -7939,6 +8004,41 @@ def render_harness_multiselect(statuses: dict[str, dict[str, Any]]) -> str:
 </details>"""
 
 
+def render_agent_variant_group(
+    group: dict[str, Any],
+    installed: set[str],
+    scope: str,
+    current_page: int,
+    filters: dict[str, str],
+) -> str:
+    base = group.get("base") if isinstance(group.get("base"), dict) else {}
+    variants = group.get("variants") if isinstance(group.get("variants"), list) else []
+    base_name = str(base.get("name") or "agent")
+    variant_count = len(variants)
+    variant_label = f"{variant_count} variant" + ("" if variant_count == 1 else "s")
+    variant_cards = "".join(
+        render_selection_card("agents", variant, installed, scope, current_page, filters)
+        for variant in variants
+        if isinstance(variant, dict)
+    )
+    if not variant_cards:
+        variant_cards = '<p class="agent-variant-empty">No matching variants</p>'
+    return f"""<section class="agent-variant-group" aria-label="{escape(base_name)} variants">
+  <div class="agent-variant-group-base">
+    {render_selection_card("agents", base, installed, scope, current_page, filters)}
+  </div>
+  <details class="agent-variant-details" open>
+    <summary>
+      <span>Variants</span>
+      <small>{escape(variant_label)}</small>
+    </summary>
+    <div class="agent-variant-list">
+      {variant_cards}
+    </div>
+  </details>
+</section>"""
+
+
 def render_selection_card(
     content_type: str,
     item: dict[str, str],
@@ -7948,6 +8048,8 @@ def render_selection_card(
     filters: dict[str, str],
 ) -> str:
     name = item["name"]
+    edit_name = str(item.get("variant_base") or name)
+    is_variant = bool(item.get("variant_base"))
     is_installed = name in installed
     loaded_globally = is_loaded_globally(content_type, name, installed, scope)
     global_harnesses: list[str] = []
@@ -7962,6 +8064,8 @@ def render_selection_card(
         if (is_installed or loaded_globally) and not global_harnesses and name in installed:
             global_harnesses = ["Global installed marker"]
     meta = item["description"] or item["path"]
+    if is_variant:
+        meta = f"Variant of {edit_name}. {meta}".strip()
     install_count = int(item.get("install_count", 0))
     project_label = f"{install_count} project" + ("" if install_count == 1 else "s")
     group_count = len(item.get("groups", []))
@@ -7977,7 +8081,7 @@ def render_selection_card(
     view = ""
     edit_href = (
         f"/?type={urllib.parse.quote(content_type)}"
-        f"&name={urllib.parse.quote(name)}"
+        f"&name={urllib.parse.quote(edit_name)}"
         f"&scope={urllib.parse.quote(scope)}"
         f"{view}"
     )
@@ -8012,17 +8116,21 @@ def render_selection_card(
     classes = ["selection-card"]
     if content_type == "templates":
         classes.append("template-selection-card")
+    if is_variant:
+        classes.append("agent-variant-selection-card")
     if loaded_globally:
         classes.append("global-loaded-selection-card")
     card_class = " ".join(classes)
     scope_icons = render_selection_scope_icons(global_harnesses, project_harnesses)
+    variant_badge = '<span class="selection-card-variant-badge">Variant</span>' if is_variant else ""
     return f"""<article class="{card_class}"{preview_attrs}>
   <div class="selection-card-main">
     <div class="selection-card-title">
       {bulk_select}
       <span class="selection-card-name">{escape(name)}</span>
+      {variant_badge}
       {scope_icons}
-      <a class="selection-card-edit" href="{edit_href}" title="Edit {escape(name)}" aria-label="Edit {escape(name)}" data-selection-edit-button data-edit-type="{escape(content_type)}" data-edit-name="{escape(name)}" data-edit-scope="{escape(scope)}" data-edit-view="form">Edit</a>
+      <a class="selection-card-edit" href="{edit_href}" title="Edit {escape(edit_name)}" aria-label="Edit {escape(edit_name)}" data-selection-edit-button data-edit-type="{escape(content_type)}" data-edit-name="{escape(edit_name)}" data-edit-scope="{escape(scope)}" data-edit-view="form">Edit</a>
     </div>
     <small>{escape(meta)}</small>
   </div>
@@ -10648,6 +10756,89 @@ p { margin: 4px 0 0; color: var(--muted); }
   gap: 14px;
   padding: 16px;
 }
+.selection-grid.agent-selection-grid {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 18px;
+}
+.agent-variant-group {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+}
+.agent-variant-group:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+.agent-variant-group-base,
+.agent-variant-details,
+.agent-variant-list {
+  min-width: 0;
+}
+.agent-variant-details {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.agent-variant-details > summary {
+  min-height: 34px;
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+  list-style: none;
+}
+.agent-variant-details > summary::-webkit-details-marker {
+  display: none;
+}
+.agent-variant-details > summary::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: rotate(-45deg);
+  transition: transform 140ms ease;
+}
+.agent-variant-details[open] > summary::before {
+  transform: rotate(45deg);
+}
+.agent-variant-details > summary:hover,
+.agent-variant-details > summary:focus-visible {
+  border-color: var(--primary);
+  outline: none;
+}
+.agent-variant-details > summary span {
+  color: var(--text);
+}
+.agent-variant-details > summary small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+.agent-variant-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 14px;
+}
+.agent-variant-empty {
+  margin: 0;
+  padding: 14px 0;
+  color: var(--muted);
+  font-size: 13px;
+}
 .selection-card {
   position: relative;
   isolation: isolate;
@@ -10739,6 +10930,13 @@ p { margin: 4px 0 0; color: var(--muted); }
 .template-selection-card:focus-within {
   border-color: var(--template);
   background: color-mix(in srgb, var(--template) 4%, var(--surface));
+}
+.agent-variant-selection-card {
+  border-style: dashed;
+}
+.agent-variant-selection-card::after {
+  background: linear-gradient(90deg, var(--accent), var(--primary));
+  opacity: 0.75;
 }
 .global-loaded-selection-card {
   border: 1.5px solid color-mix(in srgb, var(--primary) 84%, var(--line));
@@ -10837,6 +11035,22 @@ p { margin: 4px 0 0; color: var(--muted); }
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.selection-card .selection-card-variant-badge {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid color-mix(in srgb, var(--accent) 48%, var(--line));
+  border-radius: 999px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  text-transform: uppercase;
   white-space: nowrap;
 }
 .selection-card .selection-card-scope-icons {
@@ -12931,6 +13145,9 @@ button.danger:focus-visible,
   .selection-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
+  .agent-variant-group {
+    grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
+  }
 }
 @media (max-width: 860px) {
   .topbar {
@@ -12987,6 +13204,12 @@ button.danger:focus-visible,
     margin-left: 0;
   }
   .selection-grid {
+    grid-template-columns: 1fr;
+  }
+  .agent-variant-group {
+    grid-template-columns: 1fr;
+  }
+  .agent-variant-list {
     grid-template-columns: 1fr;
   }
   .pagination-footer {

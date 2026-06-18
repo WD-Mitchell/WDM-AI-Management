@@ -3,8 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List, Sequence
 
+from .agent_variants import agent_source_exists
 from .groups import CONTENT_TYPES, get_all_type, group_path, parse_group_section, parse_section_file, template_path
-from .utils import AI_MGMT_HOME, INSTALLED_DIR, SYNC_TEMPLATE_FILE, CLIError, dedupe, ensure_dir, info, ok, singular_label, warn
+from .utils import AI_MGMT_HOME, INSTALLED_DIR, SYNC_TEMPLATE_FILE, CLIError, content_source_dir, dedupe, ensure_dir, info, ok, singular_label, warn
 
 INSTALLED_SKILLS: List[str] = []
 
@@ -65,7 +66,8 @@ def install_type(content_type: str, names: Sequence[str]) -> None:
         from .groups import resolve_item_path
 
         path = resolve_item_path(content_type, name)
-        if path.exists():
+        exists = path.exists() or (content_type == "agents" and agent_source_exists(content_source_dir("agents"), name))
+        if exists:
             if name not in installed:
                 installed.append(name)
             ok(name)

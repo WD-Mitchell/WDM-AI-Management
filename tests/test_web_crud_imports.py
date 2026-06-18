@@ -150,6 +150,57 @@ class WebCrudImportAndPreviewTests(TempWDMTestCase):
         raw = (self.content_root / "groups" / "platform.group").read_text(encoding="utf-8")
         self.assertEqual("# Platform group\n\n[agents]\nalpha\nbeta\n\n[skills]\ndocs\n", raw)
 
+    def test_agent_variant_names_are_listed_and_installable(self) -> None:
+        agent_dir = self.content_root / "agents" / "core"
+        agent_dir.mkdir(parents=True, exist_ok=True)
+        (agent_dir / "frontend-developer.md").write_text(
+            """---
+name: frontend-developer
+description: Base frontend developer
+variants:
+  - name: react-developer
+    description: React frontend developer
+    skills:
+      - react-development
+    context: React-specific context.
+---
+
+Build frontend interfaces.
+""",
+            encoding="utf-8",
+        )
+
+        self.assertIn("frontend-developer--react-developer", self.web.list_names("agents"))
+        summary = self.web.item_summary("agents", "frontend-developer--react-developer")
+        self.assertEqual("frontend-developer", summary["variant_base"])
+        rendered = self.web.render_selection_card(
+            "agents",
+            summary,
+            set(),
+            "global",
+            1,
+            self.web.normalize_selection_filters({}, []),
+        )
+        self.assertIn("selection-card-variant-badge", rendered)
+        self.assertIn('data-edit-name="frontend-developer"', rendered)
+
+        page = self.web.render_selection_page(
+            "agents",
+            [self.web.item_summary("agents", name) for name in self.web.list_names("agents")],
+            set(),
+            "global",
+            1,
+            {},
+        )
+        self.assertIn("agent-variant-group", page)
+        self.assertIn("agent-variant-details", page)
+        self.assertIn("agent-variant-list", page)
+        self.assertIn("frontend-developer--react-developer", page)
+        self.assertIn('name="names" value="frontend-developer--react-developer"', page)
+
+        result = self.web.validation_result("agents", "frontend-developer--react-developer", "codex")
+        self.assertTrue(result["ok"], result)
+
     def test_group_form_post_preserves_repeated_checkbox_values(self) -> None:
         self.write_agent("alpha")
         self.write_agent("beta")

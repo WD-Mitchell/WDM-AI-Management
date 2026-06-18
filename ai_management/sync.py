@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
 
 from .build import build_all
+from .agent_variants import agent_source_exists
 from .groups import apply_group_sections, apply_template_sections, group_path, resolve_selection_paths, template_path
 from .install import load_installed_type
 from .pull import pull_from_github
@@ -240,6 +241,8 @@ def sync_resolve_selection(options: SyncOptions) -> None:
         resolved = []
         for path in resolve_selection_paths(content_type, raw[content_type]):
             if path.exists() and path not in resolved:
+                resolved.append(path)
+            elif content_type == "agents" and agent_source_exists(content_source_dir("agents"), path.stem) and path not in resolved:
                 resolved.append(path)
             elif not path.exists():
                 warn(f"Selection not found: {content_type}/{path.name}")

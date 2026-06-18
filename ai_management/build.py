@@ -27,6 +27,7 @@ from configparser import ConfigParser
 
 import yaml
 
+from .agent_variants import agent_variants_from_fields, materialize_agent_variant, variant_output_name
 from .utils import ALL_HARNESSES, ALL_HARNESS_DEFINITIONS, CONFIGURED_HARNESSES, HARNESS_SET, CONTENT_ROOT, CORE_SOURCE_DIR, MCP_SOURCE_EXTENSIONS, content_source_dir
 
 # ── Harness definitions ──────────────────────────────────────────
@@ -45,7 +46,7 @@ AGENT_SCHEMAS = {
     ],
     "claude": [
         "name", "description", "model", "effort",
-        "tools", "disallowedTools", "permissionMode", "color",
+        "tools", "disallowedTools", "permissionMode", "skills", "color",
     ],
     "codex": [
         # NOTE: emitted as TOML, not Markdown frontmatter (see build_codex_agent_toml).
@@ -664,6 +665,7 @@ def build_agents(source_dir: Path, harnesses: list[str], dry_run: bool = False, 
         for source_file in source_files:
             content = source_file.read_text(encoding="utf-8")
             fields, body = parse_frontmatter(content)
+            base_name = str(fields.get("name") or source_file.stem).strip() or source_file.stem
 
             if harness == "codex":
                 result = build_codex_agent_toml(fields, body, defaults=defaults, source_name=str(source_file))
@@ -679,6 +681,33 @@ def build_agents(source_dir: Path, harnesses: list[str], dry_run: bool = False, 
             else:
                 atomic_write(output_path, result)
             stats[harness] += 1
+
+            for variant in agent_variants_from_fields(fields):
+                variant_fields, variant_body = materialize_agent_variant(fields, body, variant, base_name)
+                if harness == "codex":
+                    variant_result = build_codex_agent_toml(
+                        variant_fields,
+                        variant_body,
+                        defaults=defaults,
+                        source_name=f"{source_file}#{variant_output_name(base_name, variant)}",
+                    )
+                else:
+                    variant_result = build_md_file(
+                        variant_fields,
+                        variant_body,
+                        harness,
+                        schema,
+                        defaults=defaults,
+                        content_type="agents",
+                    )
+                if variant_result is None:
+                    continue
+                variant_output = output_dir / (variant_output_name(base_name, variant) + suffix)
+                if dry_run:
+                    print(f"  [dry-run] {harness}/agents/{variant_output.name}")
+                else:
+                    atomic_write(variant_output, variant_result)
+                stats[harness] += 1
 
     return stats
 

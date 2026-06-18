@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
 
+from .agent_variants import agent_source_exists, agent_variant_index
 from .utils import CONTENT_TYPES, GROUPS_DIR, MCP_SOURCE_EXTENSIONS, TEMPLATES_DIR, content_source_dir, dedupe, strip_inline_comment
 
 
@@ -39,6 +40,11 @@ def get_all_type(content_type: str) -> List[str]:
     if not base.exists():
         return []
     items: List[str] = []
+    if content_type == "agents":
+        for child in sorted(base.glob("*.md")):
+            if child.is_file():
+                items.append(child.stem)
+        items.extend(agent_variant_index(base).keys())
     if content_type == "skills":
         for child in sorted(base.iterdir()):
             if child.is_dir() and not child.name.startswith(".") and (child / "SKILL.md").exists():
@@ -51,7 +57,7 @@ def get_all_type(content_type: str) -> List[str]:
         for child in sorted(base.iterdir()):
             if child.is_file() and child.suffix.lower() in MCP_SOURCE_EXTENSIONS:
                 items.append(child.stem)
-    else:
+    elif content_type not in {"agents", "skills", "hooks", "mcp"}:
         for child in sorted(base.glob("*.md")):
             if child.is_file():
                 items.append(child.stem)
@@ -60,6 +66,10 @@ def get_all_type(content_type: str) -> List[str]:
 
 def resolve_item_path(content_type: str, name: str) -> Path:
     base = content_source_dir(content_type)
+    if content_type == "agents":
+        if (base / f"{name}.md").exists() or agent_source_exists(base, name):
+            return base / f"{name}.md"
+        return base / f"{name}.md"
     if content_type == "skills":
         return base / name
     if content_type == "hooks":

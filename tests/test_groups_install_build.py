@@ -268,3 +268,42 @@ extra: kept
 
         data = yaml.safe_load((self.content_root / "agents" / "claude" / "agent-one.md").read_text(encoding="utf-8").split("---", 2)[1])
         self.assertEqual("agent-one", data["name"])
+
+    def test_agent_variants_build_as_generated_specialisations(self) -> None:
+        agent_dir = self.content_root / "agents" / "core"
+        agent_dir.mkdir(parents=True, exist_ok=True)
+        (agent_dir / "frontend-developer.md").write_text(
+            """---
+name: frontend-developer
+description: Base frontend developer
+skills:
+  - frontend-design
+variants:
+  - name: react-developer
+    description: React frontend developer
+    skills:
+      - react-development
+    context: |
+      Use React component, hook, and state management patterns.
+---
+
+Build frontend interfaces.
+""",
+            encoding="utf-8",
+        )
+        build = self.load("ai_management.build")
+
+        self.assertEqual({"codex": 2, "claude": 2}, build.build_agents(agent_dir, ["codex", "claude"]))
+
+        codex_variant = (self.content_root / "agents" / "codex" / "frontend-developer--react-developer.toml").read_text(encoding="utf-8")
+        self.assertIn('name = "frontend-developer--react-developer"', codex_variant)
+        self.assertIn('skills = ["frontend-design", "react-development"]', codex_variant)
+        self.assertIn("Variant Context: react-developer", codex_variant)
+
+        claude_variant = yaml.safe_load(
+            (self.content_root / "agents" / "claude" / "frontend-developer--react-developer.md")
+            .read_text(encoding="utf-8")
+            .split("---", 2)[1]
+        )
+        self.assertEqual("frontend-developer--react-developer", claude_variant["name"])
+        self.assertEqual(["frontend-design", "react-development"], claude_variant["skills"])
