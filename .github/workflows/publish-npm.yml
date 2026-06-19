@@ -21,7 +21,7 @@ concurrency:
 jobs:
   publish:
     name: Publish package
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     environment: npm-publish
     timeout-minutes: 10
 
