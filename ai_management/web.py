@@ -5850,6 +5850,7 @@ def page(content_type: str, selected_name: str | None, scope: str, body: str, fi
         if (nextGrid && grid) grid.replaceWith(nextGrid);
         if (nextPagination && pagination) pagination.replaceWith(nextPagination);
         updateBulkSelectionState();
+        updateVariantChipStrips(document);
         window.history.replaceState(null, '', url.toString());
         if (sourceInput && document.activeElement === sourceInput) {{
           const start = sourceInput.selectionStart;
@@ -5898,6 +5899,46 @@ def page(content_type: str, selected_name: str | None, scope: str, body: str, fi
           input.disabled = !active;
         }});
       }});
+    }}
+    let variantChipTimer = null;
+    function updateVariantChipStrip(strip) {{
+      const details = strip.closest('.agent-variant-details');
+      const chips = Array.from(strip.querySelectorAll('[data-agent-variant-chip]'));
+      const more = strip.querySelector('[data-agent-variant-chip-more]');
+      if (!more) return;
+      chips.forEach(chip => chip.hidden = false);
+      more.hidden = true;
+      more.textContent = '';
+      if (details && details.open) return;
+      const available = Math.floor(strip.clientWidth || 0);
+      if (!available || chips.length === 0) return;
+      const styles = window.getComputedStyle(strip);
+      const gap = parseFloat(styles.columnGap || styles.gap || '0') || 0;
+      const widths = chips.map(chip => Math.ceil(chip.getBoundingClientRect().width));
+      const totalWidth = widths.reduce((sum, width) => sum + width, 0) + (Math.max(0, chips.length - 1) * gap);
+      if (totalWidth <= available) return;
+      let visibleCount = Math.max(0, chips.length - 1);
+      while (visibleCount >= 0) {{
+        const hiddenCount = chips.length - visibleCount;
+        more.textContent = '+ ' + hiddenCount + ' More';
+        more.hidden = false;
+        const visibleWidth = widths.slice(0, visibleCount).reduce((sum, width) => sum + width, 0);
+        const moreWidth = Math.ceil(more.getBoundingClientRect().width);
+        const requiredGap = visibleCount > 0 ? visibleCount * gap : 0;
+        if (visibleWidth + moreWidth + requiredGap <= available || visibleCount === 0) break;
+        visibleCount -= 1;
+      }}
+      chips.forEach((chip, index) => {{
+        chip.hidden = index >= visibleCount;
+      }});
+    }}
+    function updateVariantChipStrips(root = document) {{
+      const strips = Array.from(root.querySelectorAll?.('[data-agent-variant-chip-strip]') || []);
+      strips.forEach(updateVariantChipStrip);
+    }}
+    function scheduleVariantChipStrips(delay = 0) {{
+      window.clearTimeout(variantChipTimer);
+      variantChipTimer = window.setTimeout(() => updateVariantChipStrips(document), delay);
     }}
     let dynamicPageSizeTimer = null;
     function computeDynamicPageSize() {{
@@ -6762,7 +6803,15 @@ def page(content_type: str, selected_name: str | None, scope: str, body: str, fi
       updateContentModalDirtyState();
       updateReactivePaths();
     }});
-    window.addEventListener('resize', () => applyDynamicPageSize(250));
+    document.addEventListener('toggle', event => {{
+      if (event.target?.matches?.('.agent-variant-details')) {{
+        scheduleVariantChipStrips(0);
+      }}
+    }}, true);
+    window.addEventListener('resize', () => {{
+      applyDynamicPageSize(250);
+      scheduleVariantChipStrips(100);
+    }});
     document.addEventListener('DOMContentLoaded', () => {{
       restoreRailSections();
       resetBodySectionEditors(document);
@@ -6772,6 +6821,7 @@ def page(content_type: str, selected_name: str | None, scope: str, body: str, fi
       updateSourceSettingsPanels(document);
       updateReactivePaths();
       updateBulkSelectionState();
+      updateVariantChipStrips(document);
       applyDynamicPageSize(50);
     }});
     {render_reload_script()}
@@ -8093,6 +8143,19 @@ def render_agent_variant_group(
     base_name = str(base.get("name") or "agent")
     variant_count = len(variants)
     variant_label = f"{variant_count} variant" + ("" if variant_count == 1 else "s")
+    variant_chips = "".join(
+        render_agent_variant_chip(variant, base_name)
+        for variant in variants
+        if isinstance(variant, dict)
+    )
+    variant_chip_strip = (
+        f"""<div class="agent-variant-chip-strip" data-agent-variant-chip-strip aria-label="{escape(base_name)} variant names">
+        {variant_chips}
+        <span class="agent-variant-chip agent-variant-chip-more" data-agent-variant-chip-more hidden></span>
+      </div>"""
+        if variant_chips
+        else ""
+    )
     variant_rows = "".join(
         render_agent_variant_row(variant, installed, scope, current_page, filters)
         for variant in variants
@@ -8104,14 +8167,24 @@ def render_agent_variant_group(
   {render_agent_base_panel(base, installed, scope, current_page, filters)}
   <details class="agent-variant-details" open>
     <summary>
-      <span>Variants</span>
-      <small>{escape(variant_label)}</small>
+      <span class="agent-variant-summary-title">
+        <span>Variants</span>
+        <small>{escape(variant_label)}</small>
+      </span>
+      {variant_chip_strip}
     </summary>
     <div class="agent-variant-list" role="list">
       {variant_rows}
     </div>
   </details>
 </section>"""
+
+
+def render_agent_variant_chip(item: dict[str, Any], base_name: str) -> str:
+    name = str(item.get("name") or "")
+    short_name = name.removeprefix(f"{base_name}--")
+    label = short_name or name or "variant"
+    return f'<span class="agent-variant-chip" data-agent-variant-chip title="{escape(name)}">{escape(label)}</span>'
 
 
 def render_agent_base_panel(
@@ -11121,7 +11194,11 @@ p { margin: 4px 0 0; color: var(--muted); }
 }
 .agent-variant-details > summary {
   min-height: 38px;
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-areas:
+    "chevron title"
+    ". chips";
   width: 100%;
   max-width: 100%;
   align-items: center;
@@ -11141,6 +11218,7 @@ p { margin: 4px 0 0; color: var(--muted); }
 }
 .agent-variant-details > summary::before {
   content: "";
+  grid-area: chevron;
   width: 7px;
   height: 7px;
   border-right: 2px solid var(--muted);
@@ -11156,13 +11234,61 @@ p { margin: 4px 0 0; color: var(--muted); }
   background: color-mix(in srgb, var(--primary) 7%, var(--surface));
   outline: none;
 }
-.agent-variant-details > summary span {
+.agent-variant-summary-title {
+  grid-area: title;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.agent-variant-summary-title span {
   color: var(--text);
 }
-.agent-variant-details > summary small {
+.agent-variant-summary-title small {
   color: var(--muted);
   font-size: 11px;
   font-weight: 700;
+}
+.agent-variant-chip-strip {
+  grid-area: chips;
+  min-width: 0;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+}
+.agent-variant-details[open] .agent-variant-chip-strip {
+  display: none;
+}
+.agent-variant-chip {
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 180px;
+  height: 23px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 8px;
+  border: 1px solid color-mix(in srgb, var(--line) 78%, var(--accent));
+  border-radius: 999px;
+  color: color-mix(in srgb, var(--text) 88%, var(--accent));
+  background: color-mix(in srgb, var(--accent) 7%, var(--surface));
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-variant-chip-more {
+  flex: 0 0 auto;
+  border-color: color-mix(in srgb, var(--primary) 40%, var(--line));
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 8%, var(--surface));
+}
+.agent-variant-chip[hidden],
+.agent-variant-chip-more[hidden] {
+  display: none !important;
 }
 .agent-variant-list {
   display: flex;
