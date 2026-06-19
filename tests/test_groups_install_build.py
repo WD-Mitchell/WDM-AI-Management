@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import json
+import os
 import tomllib
 from pathlib import Path
 
@@ -77,6 +80,49 @@ missing-skill
         install.uninstall_type("agents", ["beta"])
         install.install_group("core", only_type="agents")
         self.assertEqual(["alpha", "beta"], install.load_installed_type("agents"))
+
+    def test_show_installed_reports_global_and_project_scopes(self) -> None:
+        install = self.load("ai_management.install")
+        install.save_installed_type("agents", ["global-marker"])
+
+        project_installed = self.project / ".wdm" / "installed" / "agents.conf"
+        project_installed.parent.mkdir(parents=True)
+        project_installed.write_text("project-marker\n", encoding="utf-8")
+
+        global_built = self.content_root / "agents" / "claude" / "global-loaded.md"
+        global_built.parent.mkdir(parents=True, exist_ok=True)
+        global_built.write_text("global", encoding="utf-8")
+        global_dest = self.home / ".claude" / "agents" / "global-loaded.md"
+        global_dest.parent.mkdir(parents=True)
+        os.symlink(global_built, global_dest)
+
+        project_built = self.content_root / "agents" / "codex" / "project-loaded.toml"
+        project_built.parent.mkdir(parents=True, exist_ok=True)
+        project_built.write_text('name = "project-loaded"\n', encoding="utf-8")
+        project_dest = self.project / ".codex" / "agents" / "project-loaded.toml"
+        project_dest.parent.mkdir(parents=True)
+        os.symlink(project_built, project_dest)
+        (self.project / ".github" / "agents").mkdir(parents=True)
+        (self.project / ".github" / "dependabot.yml").write_text("version: 2\n", encoding="utf-8")
+
+        old_cwd = Path.cwd()
+        output = io.StringIO()
+        try:
+            os.chdir(self.project)
+            with contextlib.redirect_stdout(output):
+                install.show_installed()
+        finally:
+            os.chdir(old_cwd)
+
+        rendered = output.getvalue()
+        self.assertIn("agents:\n", rendered)
+        self.assertIn("  Global:\n", rendered)
+        self.assertIn("    global-loaded\n", rendered)
+        self.assertIn("    global-marker\n", rendered)
+        self.assertIn("  Project:\n", rendered)
+        self.assertIn("    project-loaded\n", rendered)
+        self.assertIn("    project-marker\n", rendered)
+        self.assertNotIn("rules:\n", rendered)
 
     def test_parse_frontmatter_valid_missing_and_invalid(self) -> None:
         build = self.load("ai_management.build")

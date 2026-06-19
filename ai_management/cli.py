@@ -20,7 +20,7 @@ def install_usage() -> None:
     print("  --list                       List all available skills")
     print("  --list-groups                List all groups")
     print("  --list-templates             List content editor templates")
-    print("  --installed                  Show installed items (all types)")
+    print("  --installed                  Show global/project installed and loaded items")
     print()
     print("  Default install:")
     print("  --install                    Install the default group (core agents, skills, etc.)")

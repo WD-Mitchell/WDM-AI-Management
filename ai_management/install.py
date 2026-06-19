@@ -1,11 +1,26 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import List, Sequence
 
 from .agent_variants import agent_source_exists
 from .groups import CONTENT_TYPES, get_all_type, group_path, parse_group_section, parse_section_file, template_path
-from .utils import AI_MGMT_HOME, INSTALLED_DIR, SYNC_TEMPLATE_FILE, CLIError, content_source_dir, dedupe, ensure_dir, info, ok, singular_label, warn
+from .utils import (
+    AI_MGMT_HOME,
+    ALL_HARNESSES,
+    HARNESS_DEFINITIONS,
+    INSTALLED_DIR,
+    SYNC_TEMPLATE_FILE,
+    CLIError,
+    content_source_dir,
+    dedupe,
+    ensure_dir,
+    info,
+    ok,
+    singular_label,
+    warn,
+)
 
 INSTALLED_SKILLS: List[str] = []
 
@@ -25,6 +40,10 @@ def installed_conf_path(content_type: str) -> Path:
 
 def load_installed_type(content_type: str) -> List[str]:
     path = installed_conf_path(content_type)
+    return parse_installed_conf(path)
+
+
+def parse_installed_conf(path: Path) -> List[str]:
     items: List[str] = []
     if path.exists():
         for raw in path.read_text(encoding="utf-8").splitlines():
@@ -54,6 +73,118 @@ def save_installed_type(content_type: str, items: Sequence[str]) -> None:
 
 def save_installed(items: Sequence[str]) -> None:
     save_installed_type("skills", items)
+
+
+def project_installed_conf_paths(project_root: Path, content_type: str) -> List[Path]:
+    return [
+        project_root / ".wdm" / "installed" / f"{content_type}.conf",
+        project_root / ".ai-management" / "installed" / f"{content_type}.conf",
+    ]
+
+
+def load_project_installed_type(content_type: str, project_root: Path | None = None) -> List[str]:
+    root = project_root or Path.cwd()
+    items: List[str] = []
+    for path in project_installed_conf_paths(root, content_type):
+        items.extend(parse_installed_conf(path))
+    return dedupe(items)
+
+
+def generic_harness_template(harness: str, content_type: str, global_mode: bool) -> str:
+    definition = HARNESS_DEFINITIONS.get(harness, {})
+    sync = definition.get("sync", {}) if isinstance(definition, dict) else {}
+    paths = sync.get("paths", {}) if isinstance(sync, dict) else {}
+    if not isinstance(paths, dict):
+        return ""
+    mode_key = "global" if global_mode else "project"
+    mode_paths = paths.get(mode_key)
+    if isinstance(mode_paths, dict):
+        return str(mode_paths.get(content_type) or "")
+    value = paths.get(content_type)
+    return str(value) if isinstance(value, str) else ""
+
+
+def loaded_item_scan_dirs(content_type: str, root: Path, global_mode: bool) -> List[Path]:
+    dirs: List[Path] = []
+    if content_type == "agents":
+        dirs.extend(
+            [
+                root / ".codex" / "agents",
+                root / ".claude" / "agents",
+                root / ".gemini" / "agents",
+                (root / ".copilot" / "agents") if global_mode else (root / ".github" / "agents"),
+            ]
+        )
+    elif content_type == "skills":
+        codex_skills_root = Path.home() if global_mode else root
+        dirs.extend(
+            [
+                codex_skills_root / ".agents" / "skills",
+                root / ".claude" / "skills",
+                root / ".gemini" / "skills",
+                (root / ".copilot" / "skills") if global_mode else (root / ".github" / "skills"),
+            ]
+        )
+    elif content_type == "rules":
+        dirs.append(root / ".claude" / "rules")
+        if global_mode:
+            dirs.append(root / ".copilot" / "instructions")
+    elif content_type == "workflows":
+        dirs.append(root / ".claude" / "commands")
+    elif content_type == "hooks":
+        dirs.extend(
+            [
+                root / ".codex" / "hooks",
+                root / ".claude" / "hooks",
+                (root / ".copilot" / "hooks") if global_mode else (root / ".github" / "hooks"),
+            ]
+        )
+
+    for harness in ALL_HARNESSES:
+        if harness in {"codex", "claude", "copilot", "gemini"}:
+            continue
+        template = generic_harness_template(harness, content_type, global_mode)
+        if not template or "{" not in template:
+            continue
+        parent = template.split("{", 1)[0].rstrip("/")
+        if parent:
+            dirs.append(root / parent)
+    return dedupe(dirs)
+
+
+def loaded_item_name(path: Path, content_type: str) -> str:
+    if content_type in {"skills", "hooks"}:
+        return path.name
+    target = Path(os.readlink(path)) if path.is_symlink() else path
+    name = target.name
+    for suffix in (".agent.md", ".instructions.md", ".toml", ".json", ".yaml", ".yml", ".md"):
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return target.stem
+
+
+def load_direct_harness_items(content_type: str, root: Path, global_mode: bool) -> List[str]:
+    items: List[str] = []
+    for directory in loaded_item_scan_dirs(content_type, root, global_mode):
+        if not directory.is_dir():
+            continue
+        for child in sorted(directory.iterdir()):
+            if child.name == "backups" or child.name.startswith("."):
+                continue
+            if child.is_symlink() or child.is_file() or child.is_dir():
+                name = loaded_item_name(child, content_type)
+                if name:
+                    items.append(name)
+    return sorted(dedupe(items))
+
+
+def scoped_installed_items(content_type: str, project_root: Path | None = None) -> tuple[List[str], List[str]]:
+    root = project_root or Path.cwd()
+    global_items = dedupe(
+        [*load_installed_type(content_type), *load_direct_harness_items(content_type, Path.home(), True)]
+    )
+    project_items = dedupe([*load_project_installed_type(content_type, root), *load_direct_harness_items(content_type, root, False)])
+    return sorted(global_items), sorted(project_items)
 
 
 def install_type(content_type: str, names: Sequence[str]) -> None:
@@ -96,11 +227,17 @@ def uninstall_type(content_type: str, names: Sequence[str]) -> None:
 def show_installed() -> None:
     found = False
     for content_type in CONTENT_TYPES:
-        items = load_installed_type(content_type)
-        if items:
+        global_items, project_items = scoped_installed_items(content_type)
+        if global_items or project_items:
             print(f"{content_type}:")
-            for item in items:
-                print(f"  {item}")
+            if global_items:
+                print("  Global:")
+                for item in global_items:
+                    print(f"    {item}")
+            if project_items:
+                print("  Project:")
+                for item in project_items:
+                    print(f"    {item}")
             found = True
     if not found:
         print("Nothing installed")
