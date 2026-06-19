@@ -518,7 +518,7 @@ Example agent:
 ---
 name: code-reviewer
 description: Reviews code for correctness, maintainability, and security.
-model: default-large
+model: default-high
 reasoning: high
 mcp_servers:
   - github
@@ -546,9 +546,9 @@ Portable model tiers:
 
 | Tier | Purpose |
 | --- | --- |
-| `default-small` | Faster or cheaper model |
+| `default-low` | Faster or cheaper model |
 | `default` | Standard model |
-| `default-large` | More capable model |
+| `default-high` | More capable model |
 
 Agent edit forms show model controls per harness. Harnesses that support reasoning show a reasoning select; unsupported harnesses show a disabled control.
 

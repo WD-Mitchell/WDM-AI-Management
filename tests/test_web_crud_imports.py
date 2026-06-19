@@ -522,6 +522,14 @@ Build frontend interfaces.
         self.assertIn("description", invalid["error"])
         self.assertIn("failed validation", self.web.render_validation_notice(invalid))
 
+        with self.assertRaisesRegex(ValueError, "not a string list"):
+            self.web.validate_codex_agent_toml(
+                'name = "bad"\n'
+                'description = "Bad skills shape"\n'
+                'skills = ["api-design"]\n'
+                'developer_instructions = "Do the work."\n'
+            )
+
     def test_post_routes_save_import_duplicate_delete_and_harness_toggle(self) -> None:
         status, _, headers = self.post_form(
             self.web,

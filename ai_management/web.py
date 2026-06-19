@@ -39,6 +39,7 @@ from .build import (
     build_codex_agent_toml,
     build_mcp_entry,
     build_md_file,
+    canonical_default_tier,
     load_defaults,
     parse_frontmatter,
 )
@@ -224,9 +225,9 @@ TEMPLATE_TYPE_LABELS = {
     "workflows": "Workflows",
 }
 DEFAULT_MODEL_TIERS = [
-    ("default-small", "Default small"),
+    ("default-low", "Default low"),
     ("default", "Default"),
-    ("default-large", "Default large"),
+    ("default-high", "Default high"),
 ]
 FIELD_LABELS = {
     "name": "Name",
@@ -634,7 +635,7 @@ def ensure_source_root() -> None:
 def refresh_harness_runtime() -> None:
     global ALL_HARNESS_DEFINITIONS, ALL_HARNESSES, CONFIGURED_HARNESSES, HARNESS_DEFINITIONS
     global AGENT_SCHEMAS, RULE_SCHEMAS, SKILL_SCHEMAS, WORKFLOW_SCHEMAS
-    global build_codex_agent_toml, build_md_file, load_defaults, parse_frontmatter, sync_command
+    global build_codex_agent_toml, build_md_file, canonical_default_tier, load_defaults, parse_frontmatter, sync_command
 
     refreshed_utils = importlib.reload(utils_module)
     refreshed_build = importlib.reload(build_module)
@@ -649,6 +650,7 @@ def refresh_harness_runtime() -> None:
     WORKFLOW_SCHEMAS = refreshed_build.WORKFLOW_SCHEMAS
     build_codex_agent_toml = refreshed_build.build_codex_agent_toml
     build_md_file = refreshed_build.build_md_file
+    canonical_default_tier = refreshed_build.canonical_default_tier
     load_defaults = refreshed_build.load_defaults
     parse_frontmatter = refreshed_build.parse_frontmatter
     sync_command = refreshed_sync.sync_command
@@ -1754,7 +1756,7 @@ def normalize_agent_model_fields(fields: dict[str, Any], original_fields: dict[s
     if "model" in original_fields and "model" not in normalized:
         normalized["model"] = original_fields["model"]
     for key, value in posted.items():
-        text = str(value or "").strip()
+        text = canonical_default_tier(str(value or "").strip())
         if key in original_fields or text != "default":
             normalized[key] = text or "default"
     return normalized
@@ -2781,6 +2783,53 @@ def validate_mcp_item_for_harness(name: str, path: Path, raw: str, harness: str)
     return json.dumps(entry, indent=2)
 
 
+def validate_codex_agent_toml(rendered: str) -> None:
+    data = tomllib.loads(rendered)
+    if not isinstance(data, dict):
+        raise ValueError("Codex agent output must be a TOML table.")
+    for field in ("name", "description", "developer_instructions"):
+        if not str(data.get(field) or "").strip():
+            raise ValueError(f"Codex agent output must define {field}.")
+
+    skills = data.get("skills")
+    if skills is None:
+        return
+    if not isinstance(skills, dict):
+        raise ValueError("Codex agent skills must be a table with config entries, not a string list.")
+    unknown = set(skills) - {"bundled", "include_instructions", "config"}
+    if unknown:
+        raise ValueError(f"Codex agent skills contains unsupported fields: {', '.join(sorted(unknown))}.")
+    bundled = skills.get("bundled")
+    if bundled is not None:
+        if not isinstance(bundled, dict):
+            raise ValueError("Codex agent skills.bundled must be a table.")
+        bundled_unknown = set(bundled) - {"enabled"}
+        if bundled_unknown:
+            raise ValueError(
+                f"Codex agent skills.bundled contains unsupported fields: {', '.join(sorted(bundled_unknown))}."
+            )
+        if "enabled" in bundled and not isinstance(bundled["enabled"], bool):
+            raise ValueError("Codex agent skills.bundled.enabled must be true or false.")
+    if "include_instructions" in skills and not isinstance(skills["include_instructions"], bool):
+        raise ValueError("Codex agent skills.include_instructions must be true or false.")
+
+    config = skills.get("config", [])
+    if not isinstance(config, list):
+        raise ValueError("Codex agent skills.config must be a list of skill config tables.")
+    for index, entry in enumerate(config, start=1):
+        if not isinstance(entry, dict):
+            raise ValueError(f"Codex agent skills.config entry {index} must be a table.")
+        entry_unknown = set(entry) - {"name", "path", "enabled"}
+        if entry_unknown:
+            raise ValueError(
+                f"Codex agent skills.config entry {index} contains unsupported fields: {', '.join(sorted(entry_unknown))}."
+            )
+        if not str(entry.get("name") or entry.get("path") or "").strip():
+            raise ValueError(f"Codex agent skills.config entry {index} must define name or path.")
+        if not isinstance(entry.get("enabled"), bool):
+            raise ValueError(f"Codex agent skills.config entry {index} must define enabled as true or false.")
+
+
 def validate_item_for_harness(content_type: str, name: str, harness: str) -> dict[str, Any]:
     if content_type not in VALIDATION_TYPES:
         raise ValueError("Validation is available for agents, skills, rules, workflows, and MCP servers.")
@@ -2792,6 +2841,7 @@ def validate_item_for_harness(content_type: str, name: str, harness: str) -> dic
     if content_type == "agents":
         if harness == "codex":
             rendered = build_codex_agent_toml(fields, body, defaults=defaults, source_name=str(path)) or ""
+            validate_codex_agent_toml(rendered)
         else:
             rendered = build_md_file(fields, body, harness, AGENT_SCHEMAS.get(harness, []), defaults=defaults, content_type="agents") or ""
     elif content_type == "skills":
@@ -8883,6 +8933,7 @@ def agent_model_options(harness: str, defaults: dict[str, Any], current: str = "
                 model = str(tier_config.get("model") or "").strip()
                 if model:
                     model_values.append(model)
+    current = canonical_default_tier(current)
     if current and current not in {value for value, _ in defaults_options}:
         model_values.append(current)
     models = [(value, value) for value in dict.fromkeys(value for value in model_values if value)]
@@ -8890,7 +8941,7 @@ def agent_model_options(harness: str, defaults: dict[str, Any], current: str = "
 
 
 def render_model_select(name: str, label: str, value: Any, defaults_options: list[tuple[str, str]], model_options: list[tuple[str, str]]) -> str:
-    current = str(value or "default").strip()
+    current = canonical_default_tier(str(value or "default").strip())
 
     def option_rows(options: list[tuple[str, str]]) -> str:
         rows = []
@@ -8955,7 +9006,7 @@ def render_agent_model_inputs(fields: dict[str, Any]) -> str:
         key = f"{harness}_model"
         definition = HARNESS_DEFINITIONS.get(harness, {})
         label = str(definition.get("label") or harness).strip()
-        model_value = str(fields.get(key) or "default")
+        model_value = canonical_default_tier(str(fields.get(key) or "default"))
         defaults_options, model_options = agent_model_options(harness, defaults, model_value)
         reasoning_field = harness_reasoning_field(harness)
         reasoning = render_reasoning_select(harness, reasoning_field, fields, defaults, model_value) if reasoning_field else render_disabled_reasoning_select()
@@ -9011,6 +9062,7 @@ def reasoning_option_label(field_name: str, value: str) -> str:
 
 def default_reasoning_value(harness: str, field_name: str, defaults: dict[str, Any], tier: str = "default") -> str:
     harness_defaults = defaults.get(harness, {}) if isinstance(defaults, dict) else {}
+    tier = canonical_default_tier(tier)
     if tier not in {value for value, _ in DEFAULT_MODEL_TIERS}:
         tier = "default"
     tier_config = harness_defaults.get(tier, {}) if isinstance(harness_defaults, dict) else {}
@@ -9071,7 +9123,8 @@ def render_agent_reasoning_inputs(fields: dict[str, Any]) -> str:
         field_name = harness_reasoning_field(harness)
         if not field_name:
             continue
-        controls.append(render_reasoning_select(harness, field_name, fields, defaults, str(fields.get(f"{harness}_model") or "default")))
+        model_tier = canonical_default_tier(str(fields.get(f"{harness}_model") or "default"))
+        controls.append(render_reasoning_select(harness, field_name, fields, defaults, model_tier))
     if not controls:
         return ""
     return f"""<fieldset class="agent-reasoning-fields wide">

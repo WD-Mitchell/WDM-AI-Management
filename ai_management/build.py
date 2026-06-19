@@ -115,8 +115,13 @@ DISPLAY_FIELDS = {"color", "emoji", "vibe"}
 
 OMIT_SENTINEL = "__omit__"
 
-# Default model tiers that get resolved from defaults.conf
-DEFAULT_TIERS = {"default", "default-small", "default-large"}
+# Default model tiers that get resolved from defaults.conf.
+# default-small/default-large are legacy aliases kept for existing source files.
+DEFAULT_TIER_ALIASES = {
+    "default-small": "default-low",
+    "default-large": "default-high",
+}
+DEFAULT_TIERS = {"default-low", "default", "default-high", *DEFAULT_TIER_ALIASES}
 
 # Content types that use schema-based filtering
 SCHEMA_MAP = {
@@ -166,6 +171,10 @@ def mapped_source_fields(harness: str, content_type: str, output_field: str) -> 
 
 # ── Defaults loading ────────────────────────────────────────────
 
+def canonical_default_tier(tier: str) -> str:
+    return DEFAULT_TIER_ALIASES.get(tier, tier)
+
+
 def load_defaults(defaults_path: Path | None) -> dict:
     """
     Load model defaults from an INI-style config file.
@@ -195,11 +204,13 @@ def load_defaults(defaults_path: Path | None) -> dict:
             if "." in key:
                 # tier.field = value → extra field for that tier
                 tier, field = key.split(".", 1)
+                tier = canonical_default_tier(tier)
                 if tier not in defaults[harness]:
                     defaults[harness][tier] = {}
                 defaults[harness][tier][field] = value
             else:
                 # tier = model-name
+                key = canonical_default_tier(key)
                 if key not in defaults[harness]:
                     defaults[harness][key] = {}
                 defaults[harness][key]["model"] = value
@@ -211,7 +222,7 @@ def resolve_defaults(resolved: dict, harness: str, defaults: dict) -> dict:
     """
     Replace default tier tokens in resolved fields with harness-specific values.
 
-    If model value is 'default', 'default-small', or 'default-large':
+    If model value is 'default-low', 'default', or 'default-high':
       1. Replace model with harness-specific model from defaults
       2. Inject any additional fields defined for that tier (e.g., model_reasoning_effort)
          but only if not already explicitly set in the resolved dict.
@@ -225,7 +236,7 @@ def resolve_defaults(resolved: dict, harness: str, defaults: dict) -> dict:
     if not isinstance(model_val, str) or model_val not in DEFAULT_TIERS:
         return resolved
 
-    tier = model_val
+    tier = canonical_default_tier(model_val)
     if tier not in harness_defaults:
         return resolved
 
@@ -440,7 +451,7 @@ def build_md_file(fields: dict, body: str, harness: str, schema: list[str] | Non
 
     If schema is provided, only whitelisted fields are included.
     If schema is None, all non-display/non-override fields pass through.
-    Defaults resolution replaces tier tokens (default/default-small/default-large)
+    Defaults resolution replaces tier tokens (default-low/default/default-high)
     with harness-specific model values.
     """
     resolved = {}
@@ -583,6 +594,31 @@ def _toml_value(value) -> str:
     return '"' + _toml_escape(sv) + '"'
 
 
+def _codex_skill_config(value):
+    """
+    Convert WDM's portable agent skill list to Codex's SkillsConfig shape.
+
+    Codex agent role files parse `skills` as a config table:
+      skills = { config = [{ name = "skill-name", enabled = true }] }
+    """
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, list):
+        return value
+
+    entries = []
+    for item in value:
+        if isinstance(item, dict):
+            entry = dict(item)
+            entry.setdefault("enabled", True)
+            entries.append(entry)
+            continue
+        name = str(item or "").strip()
+        if name:
+            entries.append({"name": name, "enabled": True})
+    return {"config": entries} if entries else {"config": []}
+
+
 def build_codex_agent_toml(fields: dict, body: str, defaults: dict = None, source_name: str = "") -> str | None:
     """
     Build a Codex `.toml` subagent file from universal source.
@@ -602,6 +638,8 @@ def build_codex_agent_toml(fields: dict, body: str, defaults: dict = None, sourc
 
     if defaults:
         resolved = resolve_defaults(resolved, "codex", defaults)
+    if "skills" in resolved:
+        resolved["skills"] = _codex_skill_config(resolved["skills"])
 
     # The universal markdown body is Codex's developer_instructions field.
     # Do not let frontmatter create a second, divergent instruction source.
@@ -1201,14 +1239,33 @@ def has_sources(content_type: str, source_dir: Path) -> bool:
     return False
 
 
+def defaults_path_for_source_dir(source_dir: Path) -> Path:
+    """
+    Locate defaults.conf for a managed source directory.
+
+    Normal source dirs are shaped like CONTENT_ROOT/agents/core, so the defaults
+    file is two levels up at CONTENT_ROOT/defaults.conf. Keep the one-level
+    fallback for direct ad-hoc invocations.
+    """
+    candidates = (
+        CONTENT_ROOT / "defaults.conf",
+        source_dir.parent.parent / "defaults.conf",
+        source_dir.parent / "defaults.conf",
+    )
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return CONTENT_ROOT / "defaults.conf"
+
+
 def build_all(harnesses, dry_run=False, quiet=False):
     all_stats = {}
+    defaults_path = defaults_path_for_source_dir(CONTENT_ROOT / CORE_SOURCE_DIR)
+    defaults = load_defaults(defaults_path) if defaults_path.exists() else {}
     for content_type in ["agents", "skills", "rules", "workflows", "mcp", "hooks"]:
         source_dir = content_source_dir(content_type)
         if not has_sources(content_type, source_dir):
             continue
-        defaults_path = source_dir.parent / "defaults.conf"
-        defaults = load_defaults(defaults_path) if defaults_path.exists() else {}
         stats = BUILDERS[content_type](source_dir, harnesses, dry_run=dry_run, defaults=defaults)
         all_stats[content_type] = stats
         if not quiet and not dry_run:
@@ -1250,7 +1307,7 @@ def main(argv=None):
             return 1
 
     builder = BUILDERS[args.type]
-    defaults_path = source_dir.parent / "defaults.conf"
+    defaults_path = defaults_path_for_source_dir(source_dir)
     defaults = load_defaults(defaults_path) if defaults_path.exists() else {}
     if defaults and not args.quiet:
         print(f"Loaded model defaults from {defaults_path}")

@@ -157,8 +157,16 @@ missing-skill
         defaults.parent.mkdir(parents=True, exist_ok=True)
         defaults.write_text(
             """[codex]
+default-low = gpt-5-mini
+default-low.model_reasoning_effort = low
 default = gpt-5
 default.model_reasoning_effort = medium
+default-high = gpt-5.5
+default-high.model_reasoning_effort = high
+
+[claude]
+default-large = claude-opus-4.6
+default-large.effort = high
 
 [gemini]
 default = gemini-pro
@@ -172,11 +180,53 @@ default.thinkingBudget = 4096
 
         self.assertEqual("gpt-5", loaded["codex"]["default"]["model"])
         self.assertEqual("medium", loaded["codex"]["default"]["model_reasoning_effort"])
+        self.assertEqual("gpt-5-mini", loaded["codex"]["default-low"]["model"])
+        self.assertEqual("gpt-5.5", loaded["codex"]["default-high"]["model"])
+        self.assertEqual("claude-opus-4.6", loaded["claude"]["default-high"]["model"])
         self.assertEqual("4096", loaded["gemini"]["default"]["thinkingBudget"])
         self.assertEqual(
             {"model": "gpt-5", "model_reasoning_effort": "medium"},
             build.resolve_defaults({"model": "default"}, "codex", loaded),
         )
+        self.assertEqual(
+            {"model": "gpt-5.5", "model_reasoning_effort": "high"},
+            build.resolve_defaults({"model": "default-high"}, "codex", loaded),
+        )
+        self.assertEqual(
+            {"model": "claude-opus-4.6", "effort": "high"},
+            build.resolve_defaults({"model": "default-large"}, "claude", loaded),
+        )
+
+    def test_build_all_loads_root_defaults_and_never_exports_default_tier_to_codex(self) -> None:
+        self.content_root.mkdir(parents=True, exist_ok=True)
+        (self.content_root / "defaults.conf").write_text(
+            """[codex]
+default = gpt-5.5
+default.model_reasoning_effort = high
+""",
+            encoding="utf-8",
+        )
+        source_dir = self.content_root / "agents" / "core"
+        source_dir.mkdir(parents=True, exist_ok=True)
+        (source_dir / "agent.md").write_text(
+            """---
+name: agent
+description: Test agent
+model: default
+---
+
+Do the work.
+""",
+            encoding="utf-8",
+        )
+        build = self.load("ai_management.build")
+
+        build.build_all(["codex"], quiet=True)
+
+        rendered = (self.content_root / "agents" / "codex" / "agent.toml").read_text(encoding="utf-8")
+        self.assertIn('model = "gpt-5.5"', rendered)
+        self.assertIn('model_reasoning_effort = "high"', rendered)
+        self.assertNotIn('model = "default"', rendered)
 
     def test_markdown_builder_filters_schema_applies_mapping_and_wraps_gemini_reasoning(self) -> None:
         harness_dir = self.content_root / "harnesses" / "core"
@@ -234,7 +284,7 @@ default.thinkingBudget = 4096
         self.assertEqual("api-designer", data["name"])
         self.assertEqual("gpt-5", data["model"])
         self.assertEqual("high", data["model_reasoning_effort"])
-        self.assertEqual(["api-design"], data["skills"])
+        self.assertEqual([{"name": "api-design", "enabled": True}], data["skills"]["config"])
         self.assertIn("## Mission", data["developer_instructions"])
 
         with self.assertRaisesRegex(ValueError, "description"):
@@ -343,7 +393,7 @@ Build frontend interfaces.
 
         codex_variant = (self.content_root / "agents" / "codex" / "frontend-developer--react-developer.toml").read_text(encoding="utf-8")
         self.assertIn('name = "frontend-developer--react-developer"', codex_variant)
-        self.assertIn('skills = ["frontend-design", "react-development"]', codex_variant)
+        self.assertIn('skills = { config = [{ name = "frontend-design", enabled = true }, { name = "react-development", enabled = true }] }', codex_variant)
         self.assertIn("Variant Context: react-developer", codex_variant)
 
         claude_variant = yaml.safe_load(

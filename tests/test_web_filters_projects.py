@@ -504,6 +504,20 @@ field_sections:
         reasoning = self.web.render_reasoning_select("codex", "model_reasoning_effort", {}, defaults)
         self.assertIn("Default (Low)", reasoning)
         self.assertIn("<option value=\"medium\"", reasoning)
+        tier_options = self.web.default_model_options(
+            "codex",
+            {"codex": {"default-high": {"model": "gpt-5.5", "model_reasoning_effort": "high"}}},
+        )
+        self.assertIn(("default-high", "Default high (gpt-5.5)"), tier_options)
+        self.assertEqual(
+            "high",
+            self.web.default_reasoning_value(
+                "codex",
+                "model_reasoning_effort",
+                {"codex": {"default-high": {"model_reasoning_effort": "high"}}},
+                "default-large",
+            ),
+        )
 
     def test_harness_destinations_statuses_and_scope_indicators(self) -> None:
         self.write_agent("alpha")
