@@ -339,6 +339,7 @@ class WebFiltersProjectsAndRenderingTests(TempWDMTestCase):
         self.assertTrue(normalized["group_none"])
         self.assertEqual(self.web.DEFAULT_SELECTION_SORT, normalized["sort"])
         self.assertEqual("20", normalized["per_page"])
+        self.assertEqual("20", self.web.normalize_selection_filters({"per_page": "4"}, ["core"])["per_page"])
 
         filtered = self.web.normalize_selection_filters(
             {
@@ -525,21 +526,23 @@ field_sections:
         self.assertIn("codex", icons)
 
     def test_render_selection_page_combines_external_first_and_managed_under_pagination(self) -> None:
-        self.write_agent("managed")
+        for index in range(20):
+            self.write_agent(f"managed-{index:02d}")
         external = self.project / ".codex" / "agents" / "external.toml"
         external.parent.mkdir(parents=True)
         external.write_text('name = "external"\ndescription = "External item"\ndeveloper_instructions = "Body"\n', encoding="utf-8")
 
         html = self.web.render_selection_page(
             "agents",
-            [self.web.item_summary("agents", "managed")],
+            [self.web.item_summary("agents", name) for name in self.web.list_names("agents")],
             set(),
             self.project_scope,
             1,
-            {"source": "combined", "per_page": "1"},
+            {"source": "combined", "per_page": "20"},
         )
 
         self.assertIn("external-selection-card", html)
         self.assertIn("external", html)
-        self.assertNotIn(">managed<", html)
+        self.assertNotIn(">managed-19<", html)
+        self.assertIn("20 loaded of 21", html)
         self.assertIn("Page 1 of 2", html)

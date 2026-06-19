@@ -130,7 +130,7 @@ PROJECTS_FILE = AI_MGMT_HOME / "projects.json"
 RELOAD_ENV = "AI_MANAGEMENT_WEB_RELOAD"
 DEFAULT_SELECTION_ITEMS_PER_PAGE = 20
 DEFAULT_SELECTION_SORT = "installed-desc"
-MIN_SELECTION_ITEMS_PER_PAGE = 1
+MIN_SELECTION_ITEMS_PER_PAGE = 20
 MAX_SELECTION_ITEMS_PER_PAGE = 100
 UPDATE_STATUS_CACHE: dict[str, Any] = {"checked_at": 0.0, "info": None}
 UPDATE_STATUS_TTL = 300.0
@@ -5851,6 +5851,7 @@ def page(content_type: str, selected_name: str | None, scope: str, body: str, fi
         if (nextPagination && pagination) pagination.replaceWith(nextPagination);
         updateBulkSelectionState();
         updateVariantChipStrips(document);
+        initializeInfiniteScroll(document);
         window.history.replaceState(null, '', url.toString());
         if (sourceInput && document.activeElement === sourceInput) {{
           const start = sourceInput.selectionStart;
@@ -5940,34 +5941,83 @@ def page(content_type: str, selected_name: str | None, scope: str, body: str, fi
       window.clearTimeout(variantChipTimer);
       variantChipTimer = window.setTimeout(() => updateVariantChipStrips(document), delay);
     }}
-    let dynamicPageSizeTimer = null;
-    function computeDynamicPageSize() {{
-      const grid = document.querySelector('.selection-grid');
-      if (!grid) return null;
-      const styles = window.getComputedStyle(grid);
-      const columns = Math.max(1, styles.gridTemplateColumns.split(' ').filter(Boolean).length);
-      const card = grid.querySelector('.selection-card');
-      const cardHeight = card ? card.getBoundingClientRect().height : 220;
-      const rowGap = parseFloat(styles.rowGap || styles.gap || '14') || 14;
-      const footer = document.querySelector('.pagination-footer');
-      const footerHeight = footer ? footer.getBoundingClientRect().height : 44;
-      const top = grid.getBoundingClientRect().top;
-      const available = Math.max(cardHeight, window.innerHeight - top - footerHeight - 28);
-      const rows = Math.max(1, Math.floor((available + rowGap) / (cardHeight + rowGap)));
-      return Math.min({MAX_SELECTION_ITEMS_PER_PAGE}, Math.max({MIN_SELECTION_ITEMS_PER_PAGE}, rows * columns));
+    let infiniteScrollObserver = null;
+    let infiniteScrollLoading = false;
+    function updateInfiniteScrollFooter(footer, nextFooter) {{
+      const keys = ['currentPage', 'totalPages', 'loadedCount', 'totalCount'];
+      keys.forEach(key => {{
+        if (nextFooter.dataset[key]) footer.dataset[key] = nextFooter.dataset[key];
+      }});
+      const nextUrl = nextFooter.dataset.nextPageUrl || '';
+      if (nextUrl) {{
+        footer.dataset.nextPageUrl = nextUrl;
+        footer.dataset.exhausted = 'false';
+      }} else {{
+        delete footer.dataset.nextPageUrl;
+        footer.dataset.exhausted = 'true';
+      }}
+      const summary = footer.querySelector('[data-infinite-scroll-summary]');
+      const nextSummary = nextFooter.querySelector('[data-infinite-scroll-summary]');
+      if (summary && nextSummary) summary.textContent = nextSummary.textContent;
+      const nav = footer.querySelector('.pagination');
+      const nextNav = nextFooter.querySelector('.pagination');
+      if (nav && nextNav) nav.replaceWith(document.importNode(nextNav, true));
+      else if (nav && !nextNav) nav.remove();
     }}
-    function applyDynamicPageSize(delay = 0) {{
-      window.clearTimeout(dynamicPageSizeTimer);
-      dynamicPageSizeTimer = window.setTimeout(() => {{
-        const next = computeDynamicPageSize();
-        if (!next) return;
-        const url = new URL(window.location.href);
-        const current = parseInt(url.searchParams.get('per_page') || '{DEFAULT_SELECTION_ITEMS_PER_PAGE}', 10);
-        if (next === current) return;
-        url.searchParams.set('per_page', String(next));
-        url.searchParams.set('page', '1');
-        window.location.href = url.toString();
-      }}, delay);
+    async function loadNextSelectionPage(page) {{
+      if (infiniteScrollLoading) return;
+      const grid = page.querySelector('.selection-grid');
+      const footer = page.querySelector('[data-infinite-scroll-footer]');
+      const status = footer?.querySelector('[data-infinite-scroll-status]');
+      const nextUrl = footer?.dataset.nextPageUrl || '';
+      if (!grid || !footer || !nextUrl) return;
+      infiniteScrollLoading = true;
+      footer.dataset.loading = 'true';
+      if (status) status.textContent = 'Loading more...';
+      try {{
+        const res = await fetch(new URL(nextUrl, window.location.href).toString(), {{ cache: 'no-store' }});
+        if (!res.ok) throw new Error('Load failed');
+        const html = await res.text();
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        const nextGrid = doc.querySelector('.selection-grid');
+        const nextFooter = doc.querySelector('[data-infinite-scroll-footer]');
+        if (!nextGrid || !nextFooter) throw new Error('Missing page content');
+        const fragment = document.createDocumentFragment();
+        Array.from(nextGrid.children).forEach(child => fragment.appendChild(document.importNode(child, true)));
+        grid.appendChild(fragment);
+        updateInfiniteScrollFooter(footer, nextFooter);
+        updateBulkSelectionState();
+        updateVariantChipStrips(page);
+        if (status) status.textContent = footer.dataset.nextPageUrl ? 'Scroll to load more' : 'All items loaded';
+        if (!footer.dataset.nextPageUrl && infiniteScrollObserver) infiniteScrollObserver.disconnect();
+      }} catch (_error) {{
+        footer.dataset.infiniteScrollError = 'true';
+        if (status) status.textContent = 'Could not load more items. Use the page links to continue.';
+      }} finally {{
+        footer.dataset.loading = 'false';
+        infiniteScrollLoading = false;
+      }}
+    }}
+    function initializeInfiniteScroll(root = document) {{
+      const page = root.querySelector?.('.selection-page') || (root.matches?.('.selection-page') ? root : document.querySelector('.selection-page'));
+      if (!page) return;
+      const grid = page.querySelector('.selection-grid');
+      const footer = page.querySelector('[data-infinite-scroll-footer]');
+      if (!grid || !footer) return;
+      if (!('IntersectionObserver' in window)) return;
+      page.dataset.infiniteScrollReady = 'true';
+      if (infiniteScrollObserver) infiniteScrollObserver.disconnect();
+      const status = footer.querySelector('[data-infinite-scroll-status]');
+      if (!footer.dataset.nextPageUrl) {{
+        footer.dataset.exhausted = 'true';
+        if (status) status.textContent = '';
+        return;
+      }}
+      if (status) status.textContent = 'Scroll to load more';
+      infiniteScrollObserver = new IntersectionObserver(entries => {{
+        if (entries.some(entry => entry.isIntersecting)) loadNextSelectionPage(page);
+      }}, {{ root: page, rootMargin: '420px 0px', threshold: 0 }});
+      infiniteScrollObserver.observe(footer);
     }}
     function syncHarnessMenuCheckboxes(input) {{
       const menu = input.closest('[data-harness-menu], .selection-card-action-panel');
@@ -6809,7 +6859,6 @@ def page(content_type: str, selected_name: str | None, scope: str, body: str, fi
       }}
     }}, true);
     window.addEventListener('resize', () => {{
-      applyDynamicPageSize(250);
       scheduleVariantChipStrips(100);
     }});
     document.addEventListener('DOMContentLoaded', () => {{
@@ -6822,7 +6871,7 @@ def page(content_type: str, selected_name: str | None, scope: str, body: str, fi
       updateReactivePaths();
       updateBulkSelectionState();
       updateVariantChipStrips(document);
-      applyDynamicPageSize(50);
+      initializeInfiniteScroll(document);
     }});
     {render_reload_script()}
   </script>
@@ -7522,6 +7571,7 @@ def render_selection_page(
     current_page = min(max(1, selection_page), total_pages)
     start = (current_page - 1) * per_page
     end = start + per_page
+    loaded_count = min(end, len(entries))
     cards = []
     for kind, item in entries[start:end]:
         if kind == "external":
@@ -7538,7 +7588,16 @@ def render_selection_page(
         count = f"{len(filtered)} of {len(summaries)} item" + ("" if len(summaries) == 1 else "s")
     summary = render_selection_summary(content_type, scope, normalized_filters, group_names)
     actions = render_selection_actions(content_type, scope, singular, new_view, normalized_filters, current_page)
-    pagination = render_selection_pagination(content_type, scope, current_page, total_pages, normalized_filters, count)
+    pagination = render_selection_pagination(
+        content_type,
+        scope,
+        current_page,
+        total_pages,
+        normalized_filters,
+        count,
+        loaded_count,
+        len(entries),
+    )
     return f"""<section class="selection-page">
   {actions}
   {summary}
@@ -7798,7 +7857,7 @@ def filter_hidden_inputs(filters: dict[str, Any]) -> str:
     if filters.get("sort") and filters["sort"] != DEFAULT_SELECTION_SORT:
         fields.append(f'<input type="hidden" name="sort" value="{escape(filters["sort"])}">')
     if filters.get("per_page"):
-        fields.append(f'<input type="hidden" name="per_page" value="{escape(filters["per_page"])}" data-dynamic-per-page>')
+        fields.append(f'<input type="hidden" name="per_page" value="{escape(filters["per_page"])}">')
     if filters.get("source_mode") and filters["source_mode"] != "managed":
         fields.append(f'<input type="hidden" name="source" value="{escape(filters["source_mode"])}">')
     if filters.get("hide_global_loaded"):
@@ -7829,7 +7888,7 @@ def render_selection_summary(
   <form class="selection-summary-controls" method="get" action="/">
     <input type="hidden" name="type" value="{escape(content_type)}">
     <input type="hidden" name="scope" value="{escape(scope)}" data-scope-hidden>
-    <input type="hidden" name="per_page" value="{escape(filters["per_page"])}" data-dynamic-per-page>
+    <input type="hidden" name="per_page" value="{escape(filters["per_page"])}">
     {source_hidden}
     {hide_global_hidden}
     {template_hidden}
@@ -8502,6 +8561,8 @@ def render_selection_pagination(
     total_pages: int,
     filters: dict[str, str],
     count: str,
+    loaded_count: int,
+    total_count: int,
 ) -> str:
     extra = selection_query_params(filters)
 
@@ -8529,9 +8590,16 @@ def render_selection_pagination(
         else:
             links.append('<span class="page-link disabled">Next</span>')
     nav = f'<nav class="pagination" aria-label="Selection pages">{"".join(links)}</nav>' if links else ""
-    return f"""<div class="pagination-footer">
+    next_url = page_href(current_page + 1) if current_page < total_pages else ""
+    next_attr = f' data-next-page-url="{escape(next_url)}"' if next_url else ""
+    status = "Scroll to load more" if next_url else ""
+    loaded_label = f"{loaded_count} loaded" if total_count else "0 loaded"
+    if total_count:
+        loaded_label += f" of {total_count}"
+    return f"""<div class="pagination-footer" data-infinite-scroll-footer data-current-page="{current_page}" data-total-pages="{total_pages}" data-loaded-count="{loaded_count}" data-total-count="{total_count}"{next_attr}>
   {nav}
-  <p class="selection-summary">{escape(count)} - Page {current_page} of {total_pages}</p>
+  <p class="selection-summary" data-infinite-scroll-summary>{escape(count)} - {escape(loaded_label)} - Page {current_page} of {total_pages}</p>
+  <p class="infinite-scroll-status" data-infinite-scroll-status aria-live="polite">{escape(status)}</p>
 </div>"""
 
 
@@ -12092,6 +12160,25 @@ button:disabled {
 .pagination-footer .selection-summary {
   justify-self: end;
   text-align: right;
+}
+.selection-page[data-infinite-scroll-ready="true"] .pagination-footer {
+  grid-template-columns: 1fr;
+}
+.selection-page[data-infinite-scroll-ready="true"] .pagination {
+  display: none;
+}
+.selection-page[data-infinite-scroll-ready="true"] .pagination-footer .selection-summary,
+.selection-page[data-infinite-scroll-ready="true"] .infinite-scroll-status {
+  justify-self: center;
+  text-align: center;
+}
+.infinite-scroll-status {
+  grid-column: 1 / -1;
+  min-height: 18px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
 }
 .pagination {
   grid-column: 2;
