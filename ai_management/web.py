@@ -2352,6 +2352,17 @@ def read_import_url(url: str) -> str:
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme not in {"http", "https"}:
         raise ValueError("Import URL must start with http:// or https://.")
+    if parsed.username or parsed.password:
+        raise ValueError("Import URL must not include credentials.")
+    host = (parsed.hostname or "").lower()
+    if not host:
+        raise ValueError("Import URL must include a valid hostname.")
+    allowed_import_hosts = {
+        "raw.githubusercontent.com",
+        "gist.githubusercontent.com",
+    }
+    if host not in allowed_import_hosts:
+        raise ValueError("Import URL host is not allowed.")
     request = urllib.request.Request(url, headers={"User-Agent": "AI-Management-Importer/1.0"})
     with urllib.request.urlopen(request, timeout=12) as response:
         data = response.read(IMPORT_MAX_BYTES + 1)
