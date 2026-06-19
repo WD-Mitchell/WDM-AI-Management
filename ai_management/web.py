@@ -7046,14 +7046,14 @@ def render_reload_script() -> str:
 
 def render_rail(active: str, selected_name: str | None, scope: str, filters: dict[str, str] | None = None) -> str:
     filters = filters or {}
-    return (
+    rail_content = (
         render_harness_nav(active, selected_name, scope)
         + '<div class="rail-divider"></div>'
         + render_template_nav(active, selected_name, scope, str(filters.get("template_type") or "agents"))
         + '<div class="rail-divider"></div>'
         + render_project_nav(active, selected_name, scope)
-        + render_sync_controls(scope)
     )
+    return f'<div class="rail-content">{rail_content}</div>{render_sync_controls(scope)}'
 
 
 def render_type_submenu(active: str, scope: str) -> str:
@@ -8165,7 +8165,7 @@ def render_agent_variant_group(
         variant_rows = '<p class="agent-variant-empty">No matching variants</p>'
     return f"""<section class="agent-variant-group" aria-label="{escape(base_name)} variants">
   {render_agent_base_panel(base, installed, scope, current_page, filters)}
-  <details class="agent-variant-details" open>
+  <details class="agent-variant-details">
     <summary>
       <span class="agent-variant-summary-title">
         <span>Variants</span>
@@ -10369,8 +10369,17 @@ STYLES = """
   }
 }
 * { box-sizing: border-box; }
+html {
+  height: 100%;
+  overflow: hidden;
+}
 body {
   margin: 0;
+  min-height: 100%;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   background: var(--bg);
   color: var(--text);
   font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -10392,6 +10401,7 @@ a { color: inherit; text-decoration: none; }
 .topbar {
   position: sticky;
   top: 0;
+  flex: 0 0 auto;
   z-index: 20;
   min-height: 48px;
   display: grid;
@@ -10423,20 +10433,32 @@ h1 { font-size: 18px; }
 h2 { font-size: 16px; }
 p { margin: 4px 0 0; color: var(--muted); }
 .layout {
+  flex: 1 1 auto;
   display: grid;
   grid-template-columns: 220px minmax(220px, 320px) minmax(0, 1fr);
-  min-height: calc(100vh - 49px);
+  min-height: 0;
+  overflow: hidden;
 }
 .rail, .list-pane, .editor {
   min-width: 0;
+  min-height: 0;
   border-right: 1px solid var(--line);
 }
 .rail {
   display: flex;
   flex-direction: column;
+  max-height: 100%;
+  overflow: hidden;
   padding: 12px;
   background: linear-gradient(180deg, var(--chrome), var(--chrome-2));
   border-right-color: color-mix(in srgb, var(--accent) 20%, var(--chrome-3));
+}
+.rail-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding-right: 2px;
 }
 .rail a {
   display: block;
@@ -10549,6 +10571,7 @@ p { margin: 4px 0 0; color: var(--muted); }
   grid-column: 2;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
   background: var(--surface);
 }
 .type-tabs {
@@ -10680,15 +10703,18 @@ p { margin: 4px 0 0; color: var(--muted); }
   background: var(--surface);
   border-right: 0;
   overflow: auto;
+  overscroll-behavior: contain;
 }
 .editor.full { grid-column: 2 / -1; }
 .selection-page {
   grid-column: 2 / -1;
   min-width: 0;
-  min-height: calc(100vh - 49px);
+  min-height: 0;
+  height: 100%;
   display: flex;
   flex-direction: column;
   overflow: auto;
+  overscroll-behavior: contain;
   background: var(--surface);
 }
 .selection-summary-row {
@@ -13624,13 +13650,33 @@ button.danger:focus-visible,
     align-items: stretch;
   }
   .type-tabs { padding: 4px 0 0; }
-  .layout { grid-template-columns: 1fr; }
+  .layout {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto minmax(0, 1fr);
+  }
   .rail {
-    display: block;
-    gap: 6px;
-    overflow-x: auto;
+    grid-row: 1;
+    max-height: 34vh;
+    overflow: hidden;
     border-right: 0;
     border-bottom: 1px solid var(--line);
+  }
+  .rail-content {
+    overflow: auto;
+    padding-right: 0;
+  }
+  .selection-page,
+  .editor.full {
+    grid-column: 1;
+    grid-row: 2 / -1;
+  }
+  .list-pane {
+    grid-column: 1;
+    grid-row: 2;
+  }
+  .editor:not(.full) {
+    grid-column: 1;
+    grid-row: 3;
   }
   .project-entry {
     display: inline-flex;

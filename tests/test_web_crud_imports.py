@@ -193,7 +193,8 @@ Build frontend interfaces.
             {},
         )
         self.assertIn("agent-variant-group", page)
-        self.assertIn("agent-variant-details", page)
+        self.assertIn('<details class="agent-variant-details">', page)
+        self.assertNotIn('<details class="agent-variant-details" open>', page)
         self.assertIn("agent-variant-list", page)
         self.assertIn("agent-base-panel", page)
         self.assertIn("agent-variant-row", page)
