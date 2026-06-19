@@ -2133,6 +2133,7 @@ def save_item(form: dict[str, str]) -> str:
         definition = harness_definition_from_form(form)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(definition, indent=2, ensure_ascii=True).rstrip() + "\n", encoding="utf-8")
+        save_harness_defaults_from_form(name, form)
         maybe_remove_renamed(content_type, original_name, name)
         refresh_harness_runtime()
         return name
@@ -10229,6 +10230,14 @@ def harness_list_textarea(name: str, label: str, value: Any, rows: int = 4) -> s
 </label>"""
 
 
+def harness_text_input(name: str, label: str, value: Any, placeholder: str = "") -> str:
+    text = str(value or "")
+    return f"""<label>
+  <span>{escape(label)}</span>
+  <input name="{escape(name)}" value="{escape(text)}" placeholder="{escape(placeholder)}" required>
+</label>"""
+
+
 def harness_checkbox(name: str, label: str, checked: bool) -> str:
     return f"""<label class="checkbox-field">
   <input type="hidden" name="{escape(name)}" value="false">
@@ -10270,6 +10279,129 @@ def render_harness_field_mapping_summary(field_mappings: dict[str, Any]) -> str:
     <tbody>{"".join(rows)}</tbody>
   </table>
 </div>"""
+
+
+def reasoning_budget_for_level(value: str) -> str:
+    for budget, level in REASONING_BUDGET_LEVELS.items():
+        if level == value:
+            return budget
+    return ""
+
+
+def harness_default_tier_config(harness: str, tier: str, defaults: dict[str, Any]) -> dict[str, Any]:
+    harness_defaults = defaults.get(harness, {}) if isinstance(defaults, dict) else {}
+    tier_config = harness_defaults.get(canonical_default_tier(tier), {}) if isinstance(harness_defaults, dict) else {}
+    return tier_config if isinstance(tier_config, dict) else {}
+
+
+def render_harness_default_reasoning_select(harness: str, tier: str, field_name: str, defaults: dict[str, Any]) -> str:
+    key = f"harness_default_reasoning_{tier}"
+    current = default_reasoning_value(harness, field_name, defaults, tier)
+    rows = []
+    for value, option_label in REASONING_OPTIONS.get(field_name, []):
+        if value == "":
+            continue
+        selected = " selected" if value == current else ""
+        rows.append(f'<option value="{escape(value)}"{selected}>{escape(option_label)}</option>')
+    return f"""<label>
+  <span>Reasoning</span>
+  <select name="{escape(key)}">
+    {"".join(rows)}
+  </select>
+</label>"""
+
+
+def render_harness_defaults_editor(harness: str) -> str:
+    if not harness_supports_agent_model(harness):
+        return ""
+    defaults = load_defaults(DEFAULTS_FILE) if DEFAULTS_FILE.exists() else {}
+    reasoning_field = harness_reasoning_field(harness)
+    cards = []
+    for tier, tier_label in DEFAULT_MODEL_TIERS:
+        tier_config = harness_default_tier_config(harness, tier, defaults)
+        model = str(tier_config.get("model") or "").strip()
+        reasoning = (
+            render_harness_default_reasoning_select(harness, tier, reasoning_field, defaults)
+            if reasoning_field
+            else render_disabled_reasoning_select()
+        )
+        cards.append(
+            f"""<section class="harness-default-tier">
+  <h4>{escape(tier_label)}</h4>
+  {harness_text_input(f"harness_default_model_{tier}", "Model", model, "model-id")}
+  {reasoning}
+</section>"""
+        )
+    return f"""<fieldset class="harness-form-section wide harness-defaults-section">
+      <legend>Default models</legend>
+      <input type="hidden" name="harness_defaults_present" value="true">
+      <div class="harness-default-grid">{"".join(cards)}</div>
+    </fieldset>"""
+
+
+def dump_defaults_config(defaults: dict[str, Any]) -> str:
+    lines = [
+        "# Model Defaults Configuration",
+        "# Defines default model tiers per harness.",
+        '# Use "model: default-low", "model: default", or "model: default-high"',
+        "# in agent/skill files to auto-resolve to harness-specific models.",
+        "",
+        "# Format:",
+        "#   [harness]",
+        "#   tier = model-name",
+        "#   tier.field = value   (additional fields set when tier is used)",
+        "",
+    ]
+    for harness in ALL_HARNESSES:
+        harness_defaults = defaults.get(harness)
+        if not isinstance(harness_defaults, dict) or not harness_defaults:
+            continue
+        lines.append(f"[{harness}]")
+        for tier, _ in DEFAULT_MODEL_TIERS:
+            tier_config = harness_defaults.get(tier)
+            if not isinstance(tier_config, dict):
+                continue
+            model = str(tier_config.get("model") or "").strip()
+            if model:
+                lines.append(f"{tier} = {model}")
+            for field_name, value in tier_config.items():
+                if field_name == "model":
+                    continue
+                text = str(value or "").strip()
+                if text:
+                    lines.append(f"{tier}.{field_name} = {text}")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def save_harness_defaults_from_form(harness: str, form: dict[str, Any]) -> None:
+    if str(form.get("harness_defaults_present") or "").strip().lower() not in {"true", "1", "yes", "on"}:
+        return
+    if not harness_supports_agent_model(harness):
+        return
+
+    defaults = load_defaults(DEFAULTS_FILE) if DEFAULTS_FILE.exists() else {}
+    defaults[harness] = dict(defaults.get(harness) or {})
+    reasoning_field = harness_reasoning_field(harness)
+    for tier, tier_label in DEFAULT_MODEL_TIERS:
+        model = str(form.get(f"harness_default_model_{tier}") or "").strip()
+        if not model:
+            raise ValueError(f"{tier_label} model is required.")
+        tier_config: dict[str, Any] = {"model": model}
+        if reasoning_field:
+            reasoning = str(form.get(f"harness_default_reasoning_{tier}") or "").strip()
+            if not reasoning:
+                reasoning = REASONING_MIDDLE_VALUES.get(reasoning_field, "medium")
+            if reasoning_field == "thinkingLevel":
+                budget = reasoning_budget_for_level(reasoning)
+                if budget:
+                    tier_config["thinkingBudget"] = budget
+            else:
+                tier_config[reasoning_field] = reasoning
+        defaults[harness][tier] = tier_config
+
+    DEFAULTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    DEFAULTS_FILE.write_text(dump_defaults_config(defaults), encoding="utf-8")
 
 
 def render_harness_editor(
@@ -10347,6 +10479,7 @@ def render_harness_editor(
         {harness_list_textarea("harness_models_agents", "Agent models", models.get("agents", []), 5)}
       </div>
     </fieldset>
+    {render_harness_defaults_editor(current_name)}
     <fieldset class="harness-form-section wide">
       <legend>Schemas</legend>
       <div class="harness-form-grid compact">{schema_fields}</div>
@@ -12585,6 +12718,33 @@ button:disabled {
 .harness-form-grid .wide {
   grid-column: 1 / -1;
 }
+.harness-default-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(180px, 1fr));
+  gap: 12px;
+}
+.harness-default-tier {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+}
+.harness-default-tier h4 {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.3;
+}
+.harness-default-tier label {
+  min-width: 0;
+}
+.harness-default-tier input,
+.harness-default-tier select {
+  width: 100%;
+}
 .mapping-contract-summary {
   overflow: hidden;
   border: 1px solid var(--line);
@@ -14005,7 +14165,8 @@ button.danger:focus-visible,
   .mapping-field-row { grid-template-columns: 1fr; }
   .mapping-field-remove { width: 100%; }
   .harness-form-grid,
-  .harness-form-grid.compact { grid-template-columns: 1fr; }
+  .harness-form-grid.compact,
+  .harness-default-grid { grid-template-columns: 1fr; }
   .settings-page { grid-column: auto; padding: 14px; }
   .settings-grid,
   .source-choice-grid { grid-template-columns: 1fr; }

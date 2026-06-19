@@ -518,6 +518,39 @@ field_sections:
                 "default-large",
             ),
         )
+        self.assertEqual("16384", self.web.reasoning_budget_for_level("HIGH"))
+
+    def test_harness_editor_renders_default_model_sections(self) -> None:
+        self.content_root.mkdir(parents=True, exist_ok=True)
+        (self.content_root / "defaults.conf").write_text(
+            """[codex]
+default-low = gpt-5-mini
+default-low.model_reasoning_effort = low
+default = gpt-5.5
+default.model_reasoning_effort = medium
+default-high = gpt-5.5
+default-high.model_reasoning_effort = high
+""",
+            encoding="utf-8",
+        )
+
+        rendered = self.web.render_harness_editor(
+            "codex",
+            self.web.ALL_HARNESS_DEFINITIONS["codex"],
+            json.dumps(self.web.ALL_HARNESS_DEFINITIONS["codex"]),
+            self.content_root / "harnesses" / "core" / "codex.json",
+            "global",
+            True,
+        )
+
+        self.assertIn("<legend>Default models</legend>", rendered)
+        self.assertIn('name="harness_default_model_default-low"', rendered)
+        self.assertIn('name="harness_default_model_default"', rendered)
+        self.assertIn('name="harness_default_model_default-high"', rendered)
+        self.assertIn('value="gpt-5-mini"', rendered)
+        self.assertIn('value="gpt-5.5"', rendered)
+        self.assertIn('name="harness_default_reasoning_default-high"', rendered)
+        self.assertIn('<option value="high" selected>High</option>', rendered)
 
     def test_harness_destinations_statuses_and_scope_indicators(self) -> None:
         self.write_agent("alpha")

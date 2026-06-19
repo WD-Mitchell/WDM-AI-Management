@@ -121,6 +121,32 @@ class WebCrudImportAndPreviewTests(TempWDMTestCase):
         self.assertTrue(harness["default_enabled"])
         self.assertEqual({"agents": {"body": "instructions"}}, harness["field_mappings"])
 
+    def test_save_harness_form_updates_default_model_tiers(self) -> None:
+        self.content_root.mkdir(parents=True, exist_ok=True)
+
+        self.web.save_item(
+            {
+                "type": "harnesses",
+                "name": "codex",
+                "original_raw": json.dumps(self.web.ALL_HARNESS_DEFINITIONS["codex"]),
+                "harness_label": "OpenAI Codex CLI",
+                "harness_models_agents": "gpt-5.5\ngpt-5-mini",
+                "harness_defaults_present": "true",
+                "harness_default_model_default-low": "gpt-5-mini",
+                "harness_default_reasoning_default-low": "low",
+                "harness_default_model_default": "gpt-5.5",
+                "harness_default_reasoning_default": "medium",
+                "harness_default_model_default-high": "gpt-5.5",
+                "harness_default_reasoning_default-high": "high",
+            }
+        )
+
+        defaults = self.web.load_defaults(self.content_root / "defaults.conf")
+        self.assertEqual("gpt-5-mini", defaults["codex"]["default-low"]["model"])
+        self.assertEqual("low", defaults["codex"]["default-low"]["model_reasoning_effort"])
+        self.assertEqual("gpt-5.5", defaults["codex"]["default-high"]["model"])
+        self.assertEqual("high", defaults["codex"]["default-high"]["model_reasoning_effort"])
+
     def test_group_form_renders_sections_and_saves_checked_memberships(self) -> None:
         self.write_agent("alpha", "Alpha agent")
         self.write_agent("beta", "Beta agent")
