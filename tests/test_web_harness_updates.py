@@ -244,8 +244,10 @@ class WebHarnessUpdateTests(unittest.TestCase):
         self.assertIn('name="targets"', html)
         self.assertIn('form="bulk-harness-update-form"', html)
         self.assertIn('data-bulk-card-selection', html)
+        self.assertIn("data-live-harness-form", html)
         self.assertIn('data-harness-quick-toggle', html)
         self.assertIn('Select all', html)
+        self.assertNotIn('selection-card-action-update">Update</button>', html)
 
         all_statuses = self.web.harness_item_statuses("agents", "smoke", self.project_scope)
         for status in all_statuses.values():
@@ -263,6 +265,8 @@ class WebHarnessUpdateTests(unittest.TestCase):
         )
         self.assertIn('data-harness-quick-state="remove"', all_html)
         self.assertIn("Remove all", all_html)
+        self.assertIn("data-live-harness-form", all_html)
+        self.assertNotIn('selection-card-action-update">Update</button>', all_html)
 
     def test_selection_page_renders_bulk_update_form_for_content_types(self) -> None:
         html = self.web.render_selection_page(

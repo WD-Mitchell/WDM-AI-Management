@@ -6070,6 +6070,19 @@ def page(content_type: str, selected_name: str | None, scope: str, body: str, fi
       if (menu.matches('[data-filter-multiselect-menu], [data-harness-filter-menu]')) {{
         submitFilterForm(menu.closest('form'));
       }}
+      submitLiveHarnessFormForMenu(menu);
+    }}
+    function submitLiveHarnessFormForMenu(menu) {{
+      const form = menu?.closest('form');
+      if (!form || !form.matches('[data-live-harness-form]')) return false;
+      if (form.dataset.liveSubmitting === 'true') return true;
+      form.dataset.liveSubmitting = 'true';
+      form.setAttribute('aria-busy', 'true');
+      const quickToggle = form.querySelector('[data-harness-quick-toggle]');
+      if (quickToggle) quickToggle.disabled = true;
+      if (typeof form.requestSubmit === 'function') form.requestSubmit();
+      else form.submit();
+      return true;
     }}
     function bulkSelectionInputs() {{
       return Array.from(document.querySelectorAll('[data-bulk-card-selection]'));
@@ -6821,6 +6834,7 @@ def page(content_type: str, selected_name: str | None, scope: str, body: str, fi
         syncHarnessMenuCheckboxes(harnessChoice);
         const menu = harnessChoice.closest('[data-filter-multiselect-menu], [data-harness-filter-menu]');
         if (menu) submitFilterForm(menu.closest('form'));
+        else submitLiveHarnessFormForMenu(harnessMenuForControl(harnessChoice));
         return;
       }}
       const bodyTemplateSelect = event.target.closest('[data-body-template-select]');
@@ -8195,7 +8209,9 @@ def render_item_update_form(
     harness_statuses = statuses if statuses is not None else harness_item_statuses(content_type, name, scope)
     quick_toggle = render_harness_quick_toggle(harness_statuses) if include_quick_toggle else ""
     full_form_class = f"{form_class} harness-quick-toggle-form" if include_quick_toggle else form_class
-    return f"""<form class="{escape(full_form_class)}" action="/install" method="post">
+    live_attr = " data-live-harness-form" if include_quick_toggle else ""
+    submit_button = "" if include_quick_toggle else '<button type="submit" class="secondary selection-card-action-update">Update</button>'
+    return f"""<form class="{escape(full_form_class)}" action="/install" method="post"{live_attr}>
   <input type="hidden" name="type" value="{escape(content_type)}">
   <input type="hidden" name="name" value="{escape(name)}">
   <input type="hidden" name="action" value="install">
@@ -8204,7 +8220,7 @@ def render_item_update_form(
   <input type="hidden" name="return_to" value="{escape(selection_return_to(content_type, scope, current_page, filters))}">
   {render_harness_multiselect(harness_statuses)}
   {quick_toggle}
-  <button type="submit" class="secondary selection-card-action-update">Update</button>
+  {submit_button}
 </form>"""
 
 
@@ -11153,7 +11169,7 @@ p { margin: 4px 0 0; color: var(--muted); }
   position: relative;
   min-width: 0;
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr) minmax(320px, 390px);
+  grid-template-columns: 24px minmax(0, 1fr) minmax(230px, 300px);
   gap: 14px;
   align-items: center;
   padding: 15px 16px;
@@ -11283,13 +11299,13 @@ p { margin: 4px 0 0; color: var(--muted); }
   align-items: center;
 }
 .agent-update-form.harness-quick-toggle-form {
-  grid-template-columns: minmax(128px, 1fr) auto auto;
+  grid-template-columns: minmax(128px, 1fr) auto;
 }
 .agent-update-form.compact {
   grid-template-columns: minmax(128px, 160px) auto;
 }
 .agent-update-form.compact.harness-quick-toggle-form {
-  grid-template-columns: minmax(118px, 1fr) auto auto;
+  grid-template-columns: minmax(118px, 1fr) auto;
 }
 .agent-update-form .harness-multiselect {
   min-width: 0;
@@ -11466,7 +11482,7 @@ p { margin: 4px 0 0; color: var(--muted); }
 .agent-variant-row {
   min-width: 0;
   display: grid;
-  grid-template-columns: 24px minmax(220px, 1fr) minmax(86px, 128px) minmax(320px, 390px);
+  grid-template-columns: 24px minmax(220px, 1fr) minmax(86px, 128px) minmax(230px, 300px);
   gap: 12px;
   align-items: center;
   padding: 10px 16px;
@@ -11846,7 +11862,7 @@ p { margin: 4px 0 0; color: var(--muted); }
   min-width: 0;
 }
 .selection-card-update-form.harness-quick-toggle-form {
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto;
 }
 .selection-card-update-form .harness-quick-toggle {
   min-height: 32px;
@@ -13803,7 +13819,7 @@ button.danger:focus-visible,
     grid-column: 2;
   }
   .agent-variant-row {
-    grid-template-columns: 24px minmax(0, 1fr) minmax(300px, 390px);
+    grid-template-columns: 24px minmax(0, 1fr) minmax(230px, 300px);
   }
   .agent-variant-row-meta {
     display: none;
@@ -13903,7 +13919,7 @@ button.danger:focus-visible,
   }
   .agent-update-form.harness-quick-toggle-form,
   .agent-update-form.compact.harness-quick-toggle-form {
-    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-columns: minmax(0, 1fr) auto;
   }
   .pagination-footer {
     grid-template-columns: 1fr;
