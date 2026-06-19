@@ -6019,8 +6019,23 @@ def page(content_type: str, selected_name: str | None, scope: str, body: str, fi
       }}, {{ root: page, rootMargin: '420px 0px', threshold: 0 }});
       infiniteScrollObserver.observe(footer);
     }}
-    function syncHarnessMenuCheckboxes(input) {{
-      const menu = input.closest('[data-harness-menu], .selection-card-action-panel');
+    function harnessMenuForControl(control) {{
+      return control.closest('[data-harness-menu]') || control.closest('form')?.querySelector('[data-harness-menu]');
+    }}
+    function updateHarnessQuickToggle(menu, enabledTargets, checkedTargets) {{
+      const form = menu.closest('form');
+      const button = form?.querySelector('[data-harness-quick-toggle]');
+      if (!button) return;
+      const allChecked = enabledTargets.length > 0 && checkedTargets.length === enabledTargets.length;
+      const label = allChecked ? 'Remove all' : 'Select all';
+      const aria = allChecked ? 'Remove from all harnesses' : 'Select all harnesses';
+      button.textContent = label;
+      button.dataset.harnessQuickState = allChecked ? 'remove' : 'select';
+      button.setAttribute('aria-label', aria);
+      button.setAttribute('title', aria);
+      button.disabled = enabledTargets.length === 0;
+    }}
+    function syncHarnessMenu(menu) {{
       if (!menu) return;
       const targets = Array.from(menu.querySelectorAll('[data-harness-target]'));
       if (targets.length === 0) return;
@@ -6040,14 +6055,18 @@ def page(content_type: str, selected_name: str | None, scope: str, body: str, fi
 	        const label = summary.dataset.summaryLabel;
 	        if (label) summary.setAttribute('aria-label', label + ': ' + summaryText.textContent);
 	      }}
+      updateHarnessQuickToggle(menu, enabledTargets, checkedTargets);
     }}
-    function setHarnessMenuSelection(button, checked) {{
-      const menu = button.closest('[data-harness-menu]');
+    function syncHarnessMenuCheckboxes(input) {{
+      syncHarnessMenu(harnessMenuForControl(input));
+    }}
+    function setHarnessMenuSelection(control, checked) {{
+      const menu = harnessMenuForControl(control);
       if (!menu) return;
       menu.querySelectorAll('[data-harness-target]').forEach(target => {{
         if (!target.disabled) target.checked = checked;
       }});
-      syncHarnessMenuCheckboxes(button);
+      syncHarnessMenu(menu);
       if (menu.matches('[data-filter-multiselect-menu], [data-harness-filter-menu]')) {{
         submitFilterForm(menu.closest('form'));
       }}
@@ -6115,6 +6134,12 @@ def page(content_type: str, selected_name: str | None, scope: str, body: str, fi
       if (deselectAllHarnesses) {{
         event.preventDefault();
         setHarnessMenuSelection(deselectAllHarnesses, false);
+        return;
+      }}
+      const quickHarnessToggle = event.target.closest('[data-harness-quick-toggle]');
+      if (quickHarnessToggle) {{
+        event.preventDefault();
+        setHarnessMenuSelection(quickHarnessToggle, quickHarnessToggle.dataset.harnessQuickState !== 'remove');
         return;
       }}
       const selectVisibleBulk = event.target.closest('[data-bulk-select-visible]');
@@ -6871,6 +6896,7 @@ def page(content_type: str, selected_name: str | None, scope: str, body: str, fi
       updateReactivePaths();
       updateBulkSelectionState();
       updateVariantChipStrips(document);
+      document.querySelectorAll('[data-harness-menu]').forEach(menu => syncHarnessMenu(menu));
       initializeInfiniteScroll(document);
     }});
     {render_reload_script()}
@@ -8100,6 +8126,17 @@ def render_harness_filter_multiselect(selected_harnesses: list[str], include_non
     )
 
 
+def render_harness_quick_toggle(statuses: dict[str, dict[str, Any]]) -> str:
+    supported_statuses = [status for status in statuses.values() if status.get("supported")]
+    checked_count = sum(1 for status in supported_statuses if status.get("checked"))
+    all_checked = bool(supported_statuses) and checked_count == len(supported_statuses)
+    label = "Remove all" if all_checked else "Select all"
+    state = "remove" if all_checked else "select"
+    disabled = "" if supported_statuses else " disabled"
+    aria = "Remove from all harnesses" if all_checked else "Select all harnesses"
+    return f"""<button type="button" class="secondary harness-quick-toggle" data-harness-quick-toggle data-harness-quick-state="{state}" aria-label="{escape(aria)}" title="{escape(aria)}"{disabled}>{escape(label)}</button>"""
+
+
 def render_harness_multiselect(statuses: dict[str, dict[str, Any]]) -> str:
     supported_statuses = [status for status in statuses.values() if status.get("supported")]
     checked_count = sum(1 for status in supported_statuses if status.get("checked"))
@@ -8153,9 +8190,12 @@ def render_item_update_form(
     filters: dict[str, str],
     statuses: dict[str, dict[str, Any]] | None = None,
     form_class: str = "selection-card-form selection-card-update-form",
+    include_quick_toggle: bool = False,
 ) -> str:
     harness_statuses = statuses if statuses is not None else harness_item_statuses(content_type, name, scope)
-    return f"""<form class="{escape(form_class)}" action="/install" method="post">
+    quick_toggle = render_harness_quick_toggle(harness_statuses) if include_quick_toggle else ""
+    full_form_class = f"{form_class} harness-quick-toggle-form" if include_quick_toggle else form_class
+    return f"""<form class="{escape(full_form_class)}" action="/install" method="post">
   <input type="hidden" name="type" value="{escape(content_type)}">
   <input type="hidden" name="name" value="{escape(name)}">
   <input type="hidden" name="action" value="install">
@@ -8163,6 +8203,7 @@ def render_item_update_form(
   <input type="hidden" name="scope" value="{escape(scope)}" data-scope-hidden>
   <input type="hidden" name="return_to" value="{escape(selection_return_to(content_type, scope, current_page, filters))}">
   {render_harness_multiselect(harness_statuses)}
+  {quick_toggle}
   <button type="submit" class="secondary selection-card-action-update">Update</button>
 </form>"""
 
@@ -8284,7 +8325,7 @@ def render_agent_base_panel(
     </div>
   </div>
   <div class="agent-base-actions">
-    {render_item_update_form("agents", name, scope, current_page, filters, item.get("harness_statuses"), "agent-update-form")}
+    {render_item_update_form("agents", name, scope, current_page, filters, item.get("harness_statuses"), "agent-update-form", True)}
   </div>
 </article>"""
 
@@ -8325,7 +8366,7 @@ def render_agent_variant_row(
     <span>{group_count} group{'' if group_count == 1 else 's'}</span>
   </div>
   <div class="agent-variant-row-actions">
-    {render_item_update_form("agents", name, scope, current_page, filters, item.get("harness_statuses"), "agent-update-form compact")}
+    {render_item_update_form("agents", name, scope, current_page, filters, item.get("harness_statuses"), "agent-update-form compact", True)}
   </div>
 </article>"""
 
@@ -8378,12 +8419,24 @@ def render_selection_card(
     )
     install_control = ""
     if content_type in CONTENT_TYPES:
-        extra = selection_query_params(filters)
-        return_to = f"/?type={urllib.parse.quote(content_type)}&scope={urllib.parse.quote(scope)}&page={current_page}"
-        if extra:
-            return_to += f"&{extra}"
         harness_statuses = harness_item_statuses(content_type, name, scope)
-        install_control = f"""<form class="selection-card-form selection-card-update-form" action="/install" method="post">
+        if content_type == "agents":
+            install_control = render_item_update_form(
+                content_type,
+                name,
+                scope,
+                current_page,
+                filters,
+                harness_statuses,
+                "selection-card-form selection-card-update-form",
+                True,
+            )
+        else:
+            extra = selection_query_params(filters)
+            return_to = f"/?type={urllib.parse.quote(content_type)}&scope={urllib.parse.quote(scope)}&page={current_page}"
+            if extra:
+                return_to += f"&{extra}"
+            install_control = f"""<form class="selection-card-form selection-card-update-form" action="/install" method="post">
   <input type="hidden" name="type" value="{escape(content_type)}">
   <input type="hidden" name="name" value="{escape(name)}">
   <input type="hidden" name="action" value="install">
@@ -11100,7 +11153,7 @@ p { margin: 4px 0 0; color: var(--muted); }
   position: relative;
   min-width: 0;
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr) minmax(220px, 300px);
+  grid-template-columns: 24px minmax(0, 1fr) minmax(320px, 390px);
   gap: 14px;
   align-items: center;
   padding: 15px 16px;
@@ -11229,11 +11282,27 @@ p { margin: 4px 0 0; color: var(--muted); }
   gap: 8px;
   align-items: center;
 }
+.agent-update-form.harness-quick-toggle-form {
+  grid-template-columns: minmax(128px, 1fr) auto auto;
+}
 .agent-update-form.compact {
   grid-template-columns: minmax(128px, 160px) auto;
 }
+.agent-update-form.compact.harness-quick-toggle-form {
+  grid-template-columns: minmax(118px, 1fr) auto auto;
+}
 .agent-update-form .harness-multiselect {
   min-width: 0;
+}
+.agent-update-form .harness-quick-toggle {
+  min-height: 32px;
+  min-width: 82px;
+  padding: 7px 10px;
+  white-space: nowrap;
+}
+.agent-update-form.compact .harness-quick-toggle {
+  min-width: 76px;
+  padding-inline: 8px;
 }
 .agent-update-form .selection-card-action-update {
   min-height: 32px;
@@ -11397,7 +11466,7 @@ p { margin: 4px 0 0; color: var(--muted); }
 .agent-variant-row {
   min-width: 0;
   display: grid;
-  grid-template-columns: 24px minmax(220px, 1fr) minmax(86px, 128px) minmax(210px, 280px);
+  grid-template-columns: 24px minmax(220px, 1fr) minmax(86px, 128px) minmax(320px, 390px);
   gap: 12px;
   align-items: center;
   padding: 10px 16px;
@@ -11775,6 +11844,15 @@ p { margin: 4px 0 0; color: var(--muted); }
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
   min-width: 0;
+}
+.selection-card-update-form.harness-quick-toggle-form {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+.selection-card-update-form .harness-quick-toggle {
+  min-height: 32px;
+  min-width: 82px;
+  padding: 6px 9px;
+  white-space: nowrap;
 }
 .selection-card-actions .button,
 .selection-card-actions button,
@@ -13725,7 +13803,7 @@ button.danger:focus-visible,
     grid-column: 2;
   }
   .agent-variant-row {
-    grid-template-columns: 24px minmax(0, 1fr) minmax(190px, 240px);
+    grid-template-columns: 24px minmax(0, 1fr) minmax(300px, 390px);
   }
   .agent-variant-row-meta {
     display: none;
@@ -13822,6 +13900,10 @@ button.danger:focus-visible,
   .agent-update-form,
   .agent-update-form.compact {
     grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .agent-update-form.harness-quick-toggle-form,
+  .agent-update-form.compact.harness-quick-toggle-form {
+    grid-template-columns: minmax(0, 1fr) auto auto;
   }
   .pagination-footer {
     grid-template-columns: 1fr;
