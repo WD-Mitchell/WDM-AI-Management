@@ -50,6 +50,10 @@ class WebFiltersProjectsAndRenderingTests(TempWDMTestCase):
         original_latest = self.web.latest_available_version
         original_brew_outdated = self.web.brew_outdated
         try:
+            self.web.latest_available_version = lambda: self.fail("Normal page render should not probe latest version")
+            self.assertEqual("Installed", self.web.update_status_info()["status_label"])
+            self.web.UPDATE_STATUS_CACHE.clear()
+
             self.web.latest_available_version = lambda: "999.0.0"
 
             def fail_brew_outdated() -> str:

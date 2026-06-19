@@ -1372,8 +1372,12 @@ def read_item(content_type: str, name: str) -> tuple[Path, str, dict[str, Any], 
         variant_entry = agent_variant_entry(content_source_dir("agents"), name)
         if variant_entry:
             source_path = Path(variant_entry["source_path"])
-            raw = source_path.read_text(encoding="utf-8") if source_path.exists() else ""
-            fields, body = load_agent_source(source_path)
+            raw = str(variant_entry.get("raw") or "")
+            fields = variant_entry.get("base_fields")
+            body = variant_entry.get("base_body")
+            if not raw or not isinstance(fields, dict) or not isinstance(body, str):
+                raw = source_path.read_text(encoding="utf-8") if source_path.exists() else ""
+                fields, body = load_agent_source(source_path)
             variant_fields, variant_body = materialize_agent_variant(
                 fields,
                 body,
@@ -3337,6 +3341,9 @@ def run_sync_capture(form: dict[str, list[str]]) -> tuple[int, str]:
     return code, output.getvalue()
 
 
+CLIENT_DISCONNECT_ERRORS = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
+
+
 class ManagementHandler(BaseHTTPRequestHandler):
     server_version = "AIManagementWeb/1.0"
 
@@ -3426,8 +3433,13 @@ class ManagementHandler(BaseHTTPRequestHandler):
                 self.svg(FAVICON_SVG)
             else:
                 self.error(HTTPStatus.NOT_FOUND, "Not found")
+        except CLIENT_DISCONNECT_ERRORS:
+            return
         except Exception as exc:
-            self.html(render_error(str(exc)), HTTPStatus.INTERNAL_SERVER_ERROR)
+            try:
+                self.html(render_error(str(exc)), HTTPStatus.INTERNAL_SERVER_ERROR)
+            except CLIENT_DISCONNECT_ERRORS:
+                return
 
     def do_POST(self) -> None:
         path, _ = parse_query(self.path)
@@ -5945,7 +5957,7 @@ def page(content_type: str, selected_name: str | None, scope: str, body: str, fi
       const inputs = bulkSelectionInputs();
       const selected = inputs.filter(input => input.checked);
       inputs.forEach(input => {{
-        const card = input.closest('.selection-card');
+        const card = input.closest('[data-bulk-select-surface], .selection-card');
         if (card) card.dataset.bulkSelected = input.checked ? 'true' : 'false';
       }});
       document.querySelectorAll('[data-bulk-selection-count]').forEach(label => {{
@@ -7097,13 +7109,14 @@ def update_status_info(force: bool = False) -> dict[str, str]:
     info = detect_install_method()
     status = "unknown"
     latest = ""
-    latest = latest_available_version()
-    if latest:
-        status = "out-of-date" if compare_versions(APP_VERSION, latest) < 0 else "up-to-date"
+    if force:
+        latest = latest_available_version()
+        if latest:
+            status = "out-of-date" if compare_versions(APP_VERSION, latest) < 0 else "up-to-date"
     info = {
         **info,
         "status": status,
-        "status_label": {"up-to-date": "Up to date", "out-of-date": "Out of date"}.get(status, "Unknown"),
+        "status_label": {"up-to-date": "Up to date", "out-of-date": "Out of date"}.get(status, "Installed"),
         "current": APP_VERSION,
         "latest": latest,
     }
@@ -8004,6 +8017,59 @@ def render_harness_multiselect(statuses: dict[str, dict[str, Any]]) -> str:
 </details>"""
 
 
+def selection_return_to(content_type: str, scope: str, current_page: int, filters: dict[str, str]) -> str:
+    extra = selection_query_params(filters)
+    return_to = f"/?type={urllib.parse.quote(content_type)}&scope={urllib.parse.quote(scope)}&page={current_page}"
+    if extra:
+        return_to += f"&{extra}"
+    return return_to
+
+
+def render_item_update_form(
+    content_type: str,
+    name: str,
+    scope: str,
+    current_page: int,
+    filters: dict[str, str],
+    statuses: dict[str, dict[str, Any]] | None = None,
+    form_class: str = "selection-card-form selection-card-update-form",
+) -> str:
+    harness_statuses = statuses if statuses is not None else harness_item_statuses(content_type, name, scope)
+    return f"""<form class="{escape(form_class)}" action="/install" method="post">
+  <input type="hidden" name="type" value="{escape(content_type)}">
+  <input type="hidden" name="name" value="{escape(name)}">
+  <input type="hidden" name="action" value="install">
+  <input type="hidden" name="harness_update" value="1">
+  <input type="hidden" name="scope" value="{escape(scope)}" data-scope-hidden>
+  <input type="hidden" name="return_to" value="{escape(selection_return_to(content_type, scope, current_page, filters))}">
+  {render_harness_multiselect(harness_statuses)}
+  <button type="submit" class="secondary selection-card-action-update">Update</button>
+</form>"""
+
+
+def render_bulk_select_control(name: str, label: str, css_class: str = "selection-card-bulk-select") -> str:
+    return f"""<label class="{escape(css_class)}" title="{escape(label)}">
+        <input type="checkbox" name="names" value="{escape(name)}" form="bulk-harness-update-form" data-bulk-card-selection aria-label="{escape(label)}">
+        <span aria-hidden="true"></span>
+      </label>"""
+
+
+def agent_item_scope_labels(item: dict[str, Any], name: str, installed: set[str], scope: str) -> tuple[list[str], list[str]]:
+    is_installed = name in installed
+    loaded_globally = is_loaded_globally("agents", name, installed, scope)
+    global_harnesses: list[str] = []
+    project_harnesses: list[str] = []
+    if is_global_scope(scope):
+        if is_installed:
+            global_harnesses = checked_harness_labels(harness_item_statuses("agents", name, "global"))
+    else:
+        global_harnesses = checked_harness_labels(harness_item_statuses("agents", name, "global"))
+        project_harnesses = checked_harness_labels(item.get("harness_statuses") or harness_item_statuses("agents", name, scope))
+    if (is_installed or loaded_globally) and not global_harnesses and name in installed:
+        global_harnesses = ["Global installed marker"]
+    return global_harnesses, project_harnesses
+
+
 def render_agent_variant_group(
     group: dict[str, Any],
     installed: set[str],
@@ -8016,27 +8082,109 @@ def render_agent_variant_group(
     base_name = str(base.get("name") or "agent")
     variant_count = len(variants)
     variant_label = f"{variant_count} variant" + ("" if variant_count == 1 else "s")
-    variant_cards = "".join(
-        render_selection_card("agents", variant, installed, scope, current_page, filters)
+    variant_rows = "".join(
+        render_agent_variant_row(variant, installed, scope, current_page, filters)
         for variant in variants
         if isinstance(variant, dict)
     )
-    if not variant_cards:
-        variant_cards = '<p class="agent-variant-empty">No matching variants</p>'
+    if not variant_rows:
+        variant_rows = '<p class="agent-variant-empty">No matching variants</p>'
     return f"""<section class="agent-variant-group" aria-label="{escape(base_name)} variants">
-  <div class="agent-variant-group-base">
-    {render_selection_card("agents", base, installed, scope, current_page, filters)}
-  </div>
+  {render_agent_base_panel(base, installed, scope, current_page, filters)}
   <details class="agent-variant-details" open>
     <summary>
       <span>Variants</span>
       <small>{escape(variant_label)}</small>
     </summary>
-    <div class="agent-variant-list">
-      {variant_cards}
+    <div class="agent-variant-list" role="list">
+      {variant_rows}
     </div>
   </details>
 </section>"""
+
+
+def render_agent_base_panel(
+    item: dict[str, Any],
+    installed: set[str],
+    scope: str,
+    current_page: int,
+    filters: dict[str, str],
+) -> str:
+    name = str(item.get("name") or "")
+    meta = str(item.get("description") or item.get("path") or "")
+    install_count = int(item.get("install_count", 0))
+    group_count = len(item.get("groups", []))
+    created_at = str(item.get("created_at") or "unknown")
+    modified_at = str(item.get("modified_at") or "unknown")
+    edit_href = f"/?type=agents&name={urllib.parse.quote(name)}&scope={urllib.parse.quote(scope)}"
+    global_harnesses, project_harnesses = agent_item_scope_labels(item, name, installed, scope)
+    scope_icons = render_selection_scope_icons(global_harnesses, project_harnesses)
+    preview_attrs = f""" data-selection-preview-card data-preview-type="agents" data-preview-name="{escape(name)}" tabindex="0" aria-label="Preview {escape(name)}" title="Preview {escape(name)}" """
+    loaded_class = " global-loaded-agent-panel" if is_loaded_globally("agents", name, installed, scope) else ""
+    return f"""<article class="agent-base-panel{loaded_class}" data-bulk-select-surface{preview_attrs}>
+  <div class="agent-base-select">
+    {render_bulk_select_control(name, f"Select {name} for bulk update", "agent-bulk-select")}
+  </div>
+  <div class="agent-base-main">
+    <div class="agent-base-title">
+      <h3>{escape(name)}</h3>
+      <span class="agent-role-badge">Base agent</span>
+      {scope_icons}
+      <a class="selection-card-edit" href="{edit_href}" title="Edit {escape(name)}" aria-label="Edit {escape(name)}" data-selection-edit-button data-edit-type="agents" data-edit-name="{escape(name)}" data-edit-scope="{escape(scope)}" data-edit-view="form">Edit</a>
+    </div>
+    <p>{escape(meta)}</p>
+    <div class="agent-base-meta" aria-label="Agent metadata">
+      <span>{install_count} project{'' if install_count == 1 else 's'}</span>
+      <span>{group_count} group{'' if group_count == 1 else 's'}</span>
+      <span>Created {escape(created_at)}</span>
+      <span>Modified {escape(modified_at)}</span>
+    </div>
+  </div>
+  <div class="agent-base-actions">
+    {render_item_update_form("agents", name, scope, current_page, filters, item.get("harness_statuses"), "agent-update-form")}
+  </div>
+</article>"""
+
+
+def render_agent_variant_row(
+    item: dict[str, Any],
+    installed: set[str],
+    scope: str,
+    current_page: int,
+    filters: dict[str, str],
+) -> str:
+    name = str(item.get("name") or "")
+    base_name = str(item.get("variant_base") or name)
+    short_name = name.removeprefix(f"{base_name}--")
+    meta = str(item.get("description") or item.get("path") or "")
+    install_count = int(item.get("install_count", 0))
+    group_count = len(item.get("groups", []))
+    edit_href = f"/?type=agents&name={urllib.parse.quote(base_name)}&scope={urllib.parse.quote(scope)}"
+    global_harnesses, project_harnesses = agent_item_scope_labels(item, name, installed, scope)
+    scope_icons = render_selection_scope_icons(global_harnesses, project_harnesses)
+    preview_attrs = f""" data-selection-preview-card data-preview-type="agents" data-preview-name="{escape(name)}" tabindex="0" aria-label="Preview {escape(name)}" title="Preview {escape(name)}" """
+    loaded_class = " global-loaded-agent-row" if is_loaded_globally("agents", name, installed, scope) else ""
+    return f"""<article class="agent-variant-row{loaded_class}" role="listitem" data-bulk-select-surface{preview_attrs}>
+  <div class="agent-variant-row-select">
+    {render_bulk_select_control(name, f"Select {name} for bulk update", "agent-bulk-select")}
+  </div>
+  <div class="agent-variant-row-main">
+    <div class="agent-variant-row-title">
+      <strong>{escape(short_name)}</strong>
+      <span class="selection-card-variant-badge">Variant</span>
+      {scope_icons}
+      <a class="selection-card-edit" href="{edit_href}" title="Edit {escape(base_name)}" aria-label="Edit {escape(base_name)}" data-selection-edit-button data-edit-type="agents" data-edit-name="{escape(base_name)}" data-edit-scope="{escape(scope)}" data-edit-view="form">Edit</a>
+    </div>
+    <p>{escape(meta)}</p>
+  </div>
+  <div class="agent-variant-row-meta">
+    <span>{install_count} project{'' if install_count == 1 else 's'}</span>
+    <span>{group_count} group{'' if group_count == 1 else 's'}</span>
+  </div>
+  <div class="agent-variant-row-actions">
+    {render_item_update_form("agents", name, scope, current_page, filters, item.get("harness_statuses"), "agent-update-form compact")}
+  </div>
+</article>"""
 
 
 def render_selection_card(
@@ -10758,42 +10906,219 @@ p { margin: 4px 0 0; color: var(--muted); }
 }
 .selection-grid.agent-selection-grid {
   grid-template-columns: minmax(0, 1fr);
-  gap: 18px;
+  gap: 16px;
+  padding: 18px 24px;
 }
 .agent-variant-group {
   min-width: 0;
-  display: grid;
-  grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
-  gap: 14px;
-  align-items: start;
-  padding-bottom: 18px;
-  border-bottom: 1px solid var(--line);
+  display: block;
+  overflow: visible;
+  border: 1px solid color-mix(in srgb, var(--line) 82%, var(--primary));
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
 }
-.agent-variant-group:last-child {
-  border-bottom: 0;
-  padding-bottom: 0;
-}
-.agent-variant-group-base,
-.agent-variant-details,
-.agent-variant-list {
+.agent-base-panel {
+  position: relative;
   min-width: 0;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) minmax(220px, 300px);
+  gap: 14px;
+  align-items: center;
+  padding: 15px 16px;
+  border-top: 4px solid color-mix(in srgb, var(--primary) 76%, var(--accent));
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  background: linear-gradient(180deg, var(--surface-raised), var(--surface));
+  cursor: pointer;
+}
+.agent-base-panel:hover,
+.agent-base-panel:focus-within,
+.agent-variant-row:hover,
+.agent-variant-row:focus-within {
+  background: color-mix(in srgb, var(--primary) 5%, var(--surface));
+}
+.agent-base-panel[data-bulk-selected="true"],
+.agent-variant-row[data-bulk-selected="true"] {
+  background: color-mix(in srgb, var(--primary) 10%, var(--surface));
+  box-shadow: inset 3px 0 0 var(--primary);
+}
+.global-loaded-agent-panel,
+.global-loaded-agent-row {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--primary) 10%, var(--surface)) 0, var(--surface) 36%);
+}
+.agent-base-select,
+.agent-variant-row-select {
+  align-self: start;
+  padding-top: 2px;
+}
+.agent-base-main,
+.agent-variant-row-main,
+.agent-variant-details,
+.agent-variant-list,
+.agent-base-actions,
+.agent-variant-row-actions {
+  min-width: 0;
+}
+.agent-base-main {
+  display: grid;
+  gap: 7px;
+}
+.agent-base-title,
+.agent-variant-row-title {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.agent-base-title h3,
+.agent-variant-row-title strong {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-variant-row-title strong {
+  font-size: 13px;
+}
+.agent-base-main p,
+.agent-variant-row-main p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.38;
+  overflow-wrap: anywhere;
+}
+.agent-variant-row-main p {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 12px;
+}
+.agent-role-badge,
+.selection-card-variant-badge {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid color-mix(in srgb, var(--accent) 48%, var(--line));
+  border-radius: 999px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.agent-role-badge {
+  border-color: color-mix(in srgb, var(--primary) 48%, var(--line));
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 8%, var(--surface));
+}
+.agent-base-meta,
+.agent-variant-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  color: color-mix(in srgb, var(--muted) 86%, var(--surface));
+  font-size: 11px;
+  line-height: 1.3;
+}
+.agent-base-meta span,
+.agent-variant-row-meta span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-variant-row-meta {
+  align-self: center;
+  flex-direction: column;
+  gap: 3px;
+  color: var(--muted);
+  font-weight: 650;
+}
+.agent-update-form {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+.agent-update-form.compact {
+  grid-template-columns: minmax(128px, 160px) auto;
+}
+.agent-update-form .harness-multiselect {
+  min-width: 0;
+}
+.agent-update-form .selection-card-action-update {
+  min-height: 32px;
+  padding: 7px 11px;
+}
+.agent-bulk-select {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.agent-bulk-select input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.agent-bulk-select span {
+  width: 18px;
+  height: 18px;
+  display: block;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px transparent;
+}
+.agent-bulk-select:hover span,
+.agent-bulk-select input:focus-visible + span {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 16%, transparent);
+}
+.agent-bulk-select input:checked + span {
+  border-color: var(--primary);
+  background: var(--primary);
+  box-shadow: inset 0 0 0 3px var(--primary);
+}
+.agent-bulk-select input:checked + span::after {
+  content: "";
+  width: 8px;
+  height: 4px;
+  display: block;
+  margin: 5px 0 0 4px;
+  border-left: 2px solid var(--primary-text);
+  border-bottom: 2px solid var(--primary-text);
+  transform: rotate(-45deg);
 }
 .agent-variant-details {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  border-top: 1px solid var(--line);
 }
 .agent-variant-details > summary {
-  min-height: 34px;
-  display: inline-flex;
-  width: fit-content;
+  min-height: 38px;
+  display: flex;
+  width: 100%;
   max-width: 100%;
   align-items: center;
   gap: 8px;
-  padding: 7px 10px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--surface);
+  padding: 9px 16px;
+  border: 0;
+  border-radius: 0;
+  background: color-mix(in srgb, var(--surface-raised) 78%, var(--surface));
   color: var(--text);
   cursor: pointer;
   font-size: 12px;
@@ -10817,7 +11142,7 @@ p { margin: 4px 0 0; color: var(--muted); }
 }
 .agent-variant-details > summary:hover,
 .agent-variant-details > summary:focus-visible {
-  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 7%, var(--surface));
   outline: none;
 }
 .agent-variant-details > summary span {
@@ -10829,15 +11154,25 @@ p { margin: 4px 0 0; color: var(--muted); }
   font-weight: 700;
 }
 .agent-variant-list {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 14px;
+  display: flex;
+  flex-direction: column;
 }
 .agent-variant-empty {
   margin: 0;
-  padding: 14px 0;
+  padding: 14px 16px;
   color: var(--muted);
   font-size: 13px;
+}
+.agent-variant-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 24px minmax(220px, 1fr) minmax(86px, 128px) minmax(210px, 280px);
+  gap: 12px;
+  align-items: center;
+  padding: 10px 16px;
+  border-top: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+  background: var(--surface);
+  cursor: pointer;
 }
 .selection-card {
   position: relative;
@@ -10954,6 +11289,10 @@ p { margin: 4px 0 0; color: var(--muted); }
   font-weight: 700;
   overflow-wrap: anywhere;
 }
+.selection-card .selection-card-variant-badge {
+  display: inline-flex;
+  color: var(--accent);
+}
 .selection-card small {
   display: -webkit-box;
   -webkit-line-clamp: 3;
@@ -11037,30 +11376,14 @@ p { margin: 4px 0 0; color: var(--muted); }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.selection-card .selection-card-variant-badge {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  height: 22px;
-  padding: 0 7px;
-  border: 1px solid color-mix(in srgb, var(--accent) 48%, var(--line));
-  border-radius: 999px;
-  color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
-  font-size: 10px;
-  font-weight: 800;
-  line-height: 1;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-.selection-card .selection-card-scope-icons {
+.selection-card-scope-icons {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   gap: 4px;
   margin-left: auto;
 }
-.selection-card .selection-card-scope-indicator {
+.selection-card-scope-indicator {
   position: relative;
   display: inline-flex;
   align-items: center;
@@ -11073,7 +11396,7 @@ p { margin: 4px 0 0; color: var(--muted); }
   overflow: visible;
   white-space: nowrap;
 }
-.selection-card .scope-indicator-icon {
+.scope-indicator-icon {
   width: 30px;
   height: 30px;
   display: inline-flex;
@@ -11084,7 +11407,7 @@ p { margin: 4px 0 0; color: var(--muted); }
   background: color-mix(in srgb, var(--primary) 13%, var(--surface));
   color: var(--primary);
 }
-.selection-card .scope-indicator-icon svg {
+.scope-indicator-icon svg {
   width: 15px;
   height: 15px;
   display: block;
@@ -11098,8 +11421,8 @@ p { margin: 4px 0 0; color: var(--muted); }
   border-color: var(--primary);
   background: color-mix(in srgb, var(--primary) 18%, var(--surface));
 }
-.selection-card .scope-tooltip,
-.selection-card .selection-card-scope-indicator::before {
+.scope-tooltip,
+.selection-card-scope-indicator::before {
   position: absolute;
   right: 0;
   opacity: 0;
@@ -11108,7 +11431,7 @@ p { margin: 4px 0 0; color: var(--muted); }
   transition: opacity 140ms ease, transform 140ms ease;
   z-index: 40;
 }
-.selection-card .scope-tooltip {
+.scope-tooltip {
   display: none;
   top: calc(100% + 8px);
   min-width: 180px;
@@ -11133,20 +11456,20 @@ p { margin: 4px 0 0; color: var(--muted); }
   font-weight: 750;
   line-height: 1.2;
 }
-.selection-card .scope-tooltip ul {
+.scope-tooltip ul {
   display: grid;
   gap: 3px;
   margin: 0;
   padding: 0;
   list-style: none;
 }
-.selection-card .scope-tooltip li {
+.scope-tooltip li {
   color: var(--muted);
   font-size: 11px;
   font-weight: 500;
   line-height: 1.25;
 }
-.selection-card .selection-card-scope-indicator::before {
+.selection-card-scope-indicator::before {
   content: "";
   top: calc(100% + 4px);
   width: 8px;
@@ -11157,18 +11480,18 @@ p { margin: 4px 0 0; color: var(--muted); }
   background: var(--surface-2);
   rotate: 45deg;
 }
-.selection-card .selection-card-scope-indicator:hover .scope-tooltip,
-.selection-card .selection-card-scope-indicator:hover::before,
-.selection-card .selection-card-scope-indicator:focus-visible .scope-tooltip,
-.selection-card .selection-card-scope-indicator:focus-visible::before {
+.selection-card-scope-indicator:hover .scope-tooltip,
+.selection-card-scope-indicator:hover::before,
+.selection-card-scope-indicator:focus-visible .scope-tooltip,
+.selection-card-scope-indicator:focus-visible::before {
   opacity: 1;
   transform: translateY(0);
 }
-.selection-card .selection-card-scope-indicator:hover .scope-tooltip,
-.selection-card .selection-card-scope-indicator:focus-visible .scope-tooltip {
+.selection-card-scope-indicator:hover .scope-tooltip,
+.selection-card-scope-indicator:focus-visible .scope-tooltip {
   display: block;
 }
-.selection-card .selection-card-scope-indicator:focus-visible .scope-indicator-icon {
+.selection-card-scope-indicator:focus-visible .scope-indicator-icon {
   outline: 2px solid color-mix(in srgb, var(--primary) 42%, transparent);
   outline-offset: 2px;
 }
@@ -13145,8 +13468,17 @@ button.danger:focus-visible,
   .selection-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
-  .agent-variant-group {
-    grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
+  .agent-base-panel {
+    grid-template-columns: 24px minmax(0, 1fr);
+  }
+  .agent-base-actions {
+    grid-column: 2;
+  }
+  .agent-variant-row {
+    grid-template-columns: 24px minmax(0, 1fr) minmax(190px, 240px);
+  }
+  .agent-variant-row-meta {
+    display: none;
   }
 }
 @media (max-width: 860px) {
@@ -13206,11 +13538,20 @@ button.danger:focus-visible,
   .selection-grid {
     grid-template-columns: 1fr;
   }
-  .agent-variant-group {
-    grid-template-columns: 1fr;
+  .selection-grid.agent-selection-grid {
+    padding: 14px;
   }
-  .agent-variant-list {
-    grid-template-columns: 1fr;
+  .agent-base-panel,
+  .agent-variant-row {
+    grid-template-columns: 24px minmax(0, 1fr);
+  }
+  .agent-base-actions,
+  .agent-variant-row-actions {
+    grid-column: 2;
+  }
+  .agent-update-form,
+  .agent-update-form.compact {
+    grid-template-columns: minmax(0, 1fr) auto;
   }
   .pagination-footer {
     grid-template-columns: 1fr;

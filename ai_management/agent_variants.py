@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import lru_cache
 import re
 from pathlib import Path
 from typing import Any
@@ -70,14 +71,35 @@ def variant_output_name(base_name: str, variant: dict[str, Any]) -> str:
     return f"{base_name}{VARIANT_SEPARATOR}{variant_slug(variant)}"
 
 
-def agent_variant_index(source_dir: Path) -> dict[str, dict[str, Any]]:
-    index: dict[str, dict[str, Any]] = {}
+def agent_source_signature(source_dir: Path) -> tuple[tuple[str, int, int], ...]:
     if not source_dir.exists():
-        return index
+        return ()
+    signature: list[tuple[str, int, int]] = []
     for path in sorted(source_dir.glob("*.md")):
         if not path.is_file():
             continue
-        fields, _ = load_agent_source(path)
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        signature.append((path.name, int(stat.st_mtime_ns), int(stat.st_size)))
+    return tuple(signature)
+
+
+@lru_cache(maxsize=32)
+def _agent_variant_index_cached(
+    source_dir_text: str,
+    signature: tuple[tuple[str, int, int], ...],
+) -> dict[str, dict[str, Any]]:
+    index: dict[str, dict[str, Any]] = {}
+    source_dir = Path(source_dir_text)
+    for file_name, _, _ in signature:
+        path = source_dir / file_name
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        fields, body = parse_markdown_frontmatter(raw)
         base_name = str(fields.get("name") or path.stem).strip() or path.stem
         for variant in agent_variants_from_fields(fields):
             name = variant_output_name(base_name, variant)
@@ -85,9 +107,32 @@ def agent_variant_index(source_dir: Path) -> dict[str, dict[str, Any]]:
                 "name": name,
                 "base_name": base_name,
                 "source_path": path,
+                "raw": raw,
+                "base_fields": fields,
+                "base_body": body,
                 "variant": variant,
             }
     return index
+
+
+def copy_variant_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    copied = dict(entry)
+    if isinstance(copied.get("base_fields"), dict):
+        copied["base_fields"] = dict(copied["base_fields"])
+    if isinstance(copied.get("variant"), dict):
+        copied["variant"] = dict(copied["variant"])
+    return copied
+
+
+def agent_variant_index(source_dir: Path) -> dict[str, dict[str, Any]]:
+    signature = agent_source_signature(source_dir)
+    if not signature:
+        return {}
+    source_dir_text = str(source_dir.resolve() if source_dir.exists() else source_dir)
+    return {
+        name: copy_variant_entry(entry)
+        for name, entry in _agent_variant_index_cached(source_dir_text, signature).items()
+    }
 
 
 def agent_variant_entry(source_dir: Path, name: str) -> dict[str, Any] | None:

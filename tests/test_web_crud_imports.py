@@ -195,11 +195,88 @@ Build frontend interfaces.
         self.assertIn("agent-variant-group", page)
         self.assertIn("agent-variant-details", page)
         self.assertIn("agent-variant-list", page)
+        self.assertIn("agent-base-panel", page)
+        self.assertIn("agent-variant-row", page)
         self.assertIn("frontend-developer--react-developer", page)
         self.assertIn('name="names" value="frontend-developer--react-developer"', page)
 
         result = self.web.validation_result("agents", "frontend-developer--react-developer", "codex")
         self.assertTrue(result["ok"], result)
+
+    def test_agent_variant_index_is_cached_and_invalidates_on_source_change(self) -> None:
+        agent_dir = self.content_root / "agents" / "core"
+        agent_dir.mkdir(parents=True, exist_ok=True)
+        source = agent_dir / "frontend-developer.md"
+        source.write_text(
+            """---
+name: frontend-developer
+description: Base frontend developer
+variants:
+  - name: react-developer
+    description: React frontend developer
+  - name: nextjs-developer
+    description: Next.js frontend developer
+---
+
+Build frontend interfaces.
+""",
+            encoding="utf-8",
+        )
+
+        from ai_management import agent_variants
+
+        agent_variants._agent_variant_index_cached.cache_clear()
+        original_parse = agent_variants.parse_markdown_frontmatter
+        parse_calls = 0
+
+        def counting_parse(raw: str):
+            nonlocal parse_calls
+            parse_calls += 1
+            return original_parse(raw)
+
+        agent_variants.parse_markdown_frontmatter = counting_parse
+        try:
+            names = self.web.list_names("agents")
+            for name in names:
+                self.web.item_summary("agents", name)
+            self.assertEqual(1, parse_calls)
+
+            source.write_text(
+                source.read_text(encoding="utf-8").replace(
+                    "React frontend developer",
+                    "React specialist frontend developer",
+                ),
+                encoding="utf-8",
+            )
+            summary = self.web.item_summary("agents", "frontend-developer--react-developer")
+            self.assertEqual("React specialist frontend developer", summary["description"])
+            self.assertEqual(2, parse_calls)
+        finally:
+            agent_variants.parse_markdown_frontmatter = original_parse
+            agent_variants._agent_variant_index_cached.cache_clear()
+
+    def test_browser_disconnect_during_get_does_not_raise_traceback(self) -> None:
+        class BrokenPipeWriter:
+            def write(self, data: bytes) -> int:
+                raise BrokenPipeError("client disconnected")
+
+            def flush(self) -> None:
+                pass
+
+        handler = object.__new__(self.web.ManagementHandler)
+        handler.path = "/?type=agents"
+        handler.command = "GET"
+        handler.request_version = "HTTP/1.1"
+        handler.requestline = "GET /?type=agents HTTP/1.1"
+        handler.client_address = ("127.0.0.1", 0)
+        handler.server = None
+        handler.close_connection = True
+        handler.rfile = None
+        handler.wfile = BrokenPipeWriter()
+        handler.log_message = lambda *args: None
+        handler.headers = {}
+
+        handler.do_GET()
 
     def test_group_form_post_preserves_repeated_checkbox_values(self) -> None:
         self.write_agent("alpha")
