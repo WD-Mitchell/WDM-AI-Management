@@ -9,6 +9,14 @@ Thumbs.db
 .vscode/
 .idea/
 
+# Project-local agent/tool installs
+.claude/
+.codex/
+.cursor/
+.gemini/
+.pi/
+.github/agents/
+
 # Build artifacts — generated per-harness versions (do not commit)
 agents/copilot/
 agents/claude/
