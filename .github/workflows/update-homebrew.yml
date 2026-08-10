@@ -24,7 +24,8 @@ concurrency:
 jobs:
   update-tap:
     name: Update formula
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on:
+      group: WDM-Small
     timeout-minutes: 10
 
     steps:
