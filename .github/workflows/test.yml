@@ -57,5 +57,10 @@ jobs:
               print(f"ok {path}")
           PY
 
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
       - name: Validate package
         run: npm pack --dry-run
