@@ -18,7 +18,8 @@ concurrency:
 jobs:
   scorecard:
     name: OSSF Scorecard
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on:
+      group: WDM-Small
     timeout-minutes: 10
 
     steps:
