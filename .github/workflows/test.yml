@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   python:
-    name: Python ${{ matrix.python-version }} on Blacksmith
+    name: Python ${{ matrix.python-version }} on WDM-Small
     runs-on:
       group: WDM-Small
     timeout-minutes: 15
